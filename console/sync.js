@@ -7,6 +7,16 @@
 // hitting the filesystem on every request. The file store remains the
 // source of truth -- this module only ever reads those files, never
 // writes them.
+//
+// Sync is upsert + REAP: rows whose subject has disappeared from the
+// source of truth (a task no longer in plan.json, a run no longer in
+// index.json and with no directory on disk) are deleted, otherwise the
+// mirror accumulates ghosts from superseded plans and deleted sessions
+// that the dashboard then renders as real. Reaping is deliberately
+// conservative: a source file we could not read or could not parse is
+// NEVER treated as "empty" -- we skip the reap for that subject and log
+// it, because a swallowed parse error turning into a mass delete is
+// exactly how a mirror destroys data.
 // ---------------------------------------------------------------------
 
 const fs = require("fs");
@@ -83,11 +93,39 @@ async function markActiveRun(activeSessionId) {
 }
 
 async function syncTasks(runId, plan) {
-  if (!plan) return;
-  const tasks = Array.isArray(plan.tasks) ? plan.tasks : Array.isArray(plan) ? plan : [];
+  // CONSERVATISM RULE (see reapTasks below): `plan === null` means the file
+  // was missing OR failed to parse -- readJsonSafe cannot tell those apart.
+  // Either way we know nothing about what this run's tasks *should* be, so we
+  // must not touch existing rows. Bailing here means no upsert AND no reap.
+  if (!plan) {
+    warnOnce(runId, `plan.json unreadable/unparseable for "${runId}", skipping task sync and reap`);
+    return;
+  }
+
+  // Only a plan we can definitively read as a list of tasks is authoritative
+  // enough to reap against. An unexpected shape (e.g. `{"tasks": {...}}` or a
+  // bare string) is treated as "unknown", not as "zero tasks".
+  let tasks = null;
+  if (Array.isArray(plan.tasks)) tasks = plan.tasks;
+  else if (Array.isArray(plan)) tasks = plan;
+
+  if (tasks === null) {
+    warnOnce(runId, `plan.json for "${runId}" has no readable tasks array, skipping task sync and reap`);
+    return;
+  }
+
+  const seenKeys = new Set();
+  let sawMalformedEntry = false;
+
   for (const task of tasks) {
-    if (!task || (task.id === undefined && task.task_key === undefined)) continue;
+    if (!task || (task.id === undefined && task.task_key === undefined)) {
+      // An entry we can't key means our `seenKeys` set is incomplete, so
+      // reaping against it could delete a row that is actually still real.
+      sawMalformedEntry = true;
+      continue;
+    }
     const taskKey = String(task.id !== undefined ? task.id : task.task_key);
+    seenKeys.add(taskKey);
     const row = {
       run_id: runId,
       task_key: taskKey,
@@ -117,6 +155,76 @@ async function syncTasks(runId, plan) {
         updated_at: row.updated_at,
       });
   }
+
+  if (sawMalformedEntry) {
+    warnOnce(
+      runId,
+      `plan.json for "${runId}" contains task entries without an id, skipping task reap`
+    );
+    return;
+  }
+
+  await reapTasks(runId, seenKeys);
+}
+
+// Delete task rows for `runId` whose task_key is no longer present in that
+// run's plan.json. Callers MUST only reach this with a `seenKeys` set derived
+// from a plan.json that actually parsed -- a failed read must never look like
+// an empty plan (that is precisely the class of bug that destroyed data in
+// scripts/fixture-sessions.mjs), which is why every uncertain path above
+// returns before getting here.
+async function reapTasks(runId, seenKeys) {
+  const existing = await knex("tasks").where({ run_id: runId }).select("task_key");
+  const stale = existing
+    .map((r) => r.task_key)
+    .filter((key) => key !== null && key !== undefined && !seenKeys.has(String(key)));
+  if (stale.length === 0) return;
+
+  await knex("tasks").where({ run_id: runId }).whereIn("task_key", stale).del();
+  process.stderr.write(
+    `[sync] reaped ${stale.length} task row(s) absent from plan.json for "${runId}": ${stale.join(", ")}\n`
+  );
+}
+
+// Delete run rows (and their mirrored tasks/events) for runs that have
+// vanished from the source of truth: absent from index.json AND with no
+// session directory on disk. A run that is merely unindexed but still has a
+// directory is kept -- it may be mid-creation, and the file store, not
+// index.json alone, is what proves existence.
+//
+// `indexedIds` must come from an index.json that actually parsed; runSyncOnce
+// returns early otherwise, so an unreadable index can never mass-delete.
+async function reapRuns(indexedIds) {
+  // If the runs directory itself is unreadable we cannot prove any run is
+  // gone -- e.g. an unmounted volume would otherwise wipe every row.
+  if (!fs.existsSync(LIBERTA_RUNS_DIR)) {
+    warnOnce("*", `runs directory missing at ${LIBERTA_RUNS_DIR}, skipping run reap`);
+    return;
+  }
+
+  const rows = await knex("runs").select("id");
+  const stale = [];
+  for (const row of rows) {
+    const id = row.id;
+    if (!id || indexedIds.has(String(id))) continue;
+    let onDisk;
+    try {
+      onDisk = fs.existsSync(path.join(LIBERTA_RUNS_DIR, String(id)));
+    } catch (err) {
+      // Can't tell -- assume it still exists rather than deleting.
+      continue;
+    }
+    if (!onDisk) stale.push(id);
+  }
+  if (stale.length === 0) return;
+
+  await knex("tasks").whereIn("run_id", stale).del();
+  await knex("events").whereIn("run_id", stale).del();
+  await knex("runs").whereIn("id", stale).del();
+  for (const id of stale) eventOffsets.delete(id);
+  process.stderr.write(
+    `[sync] reaped ${stale.length} run row(s) absent from index.json and from disk: ${stale.join(", ")}\n`
+  );
 }
 
 // Only ingest bytes of events.jsonl we haven't seen yet for this run,
@@ -215,16 +323,27 @@ async function syncOneRun(session) {
 async function runSyncOnce() {
   const idx = readJsonSafe(path.join(LIBERTA_RUNS_DIR, "index.json"));
   if (!idx || !Array.isArray(idx.sessions)) {
+    // Missing or unparseable index.json: we have no idea which runs are real,
+    // so do nothing at all this pass -- in particular, do NOT reap.
+    warnOnce("*", "index.json unreadable/unparseable, skipping this pass (no reap)");
     return;
   }
 
+  const indexedIds = new Set();
   for (const session of idx.sessions) {
     if (!session || !session.id) continue;
+    indexedIds.add(String(session.id));
     try {
       await syncOneRun(session);
     } catch (err) {
       warnOnce(session.id, `sync failed for "${session.id}": ${err.message}`);
     }
+  }
+
+  try {
+    await reapRuns(indexedIds);
+  } catch (err) {
+    process.stderr.write(`[sync] run reap failed: ${err.message}\n`);
   }
 
   try {
