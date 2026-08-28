@@ -644,6 +644,46 @@ button.logout {
 }
 
 /* =========================================================================
+   Chat panel (t4) -- functional-only styling; t5 owns the visual polish.
+   Keep this block self-contained so t5's styling pass doesn't conflict.
+   ========================================================================= */
+#chat-thread {
+  max-height: 360px;
+  overflow-y: auto;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.chat-bubble {
+  margin-bottom: var(--space-2);
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
+}
+
+.chat-bubble p {
+  margin: 0.2rem 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-bubble-out {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+}
+
+.chat-bubble-in {
+  background: var(--color-primary-light);
+  margin-left: var(--space-4);
+}
+
+.chat-pending {
+  margin: 0 0 var(--space-2);
+}
+/* end chat panel (t4) */
+
+/* =========================================================================
    Skill editor panel
    ========================================================================= */
 .skill-editor {

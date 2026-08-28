@@ -170,6 +170,9 @@
     if (activeDetailTab === "skills") {
       await refreshRunSkills();
     }
+    if (activeDetailTab === "chat") {
+      await refreshChat();
+    }
   }
 
   // -----------------------------------------------------------------
@@ -199,6 +202,7 @@
   let activeDetailTab = "board";
   const boardTabPanel = document.getElementById("detail-board-tab");
   const skillsTabPanel = document.getElementById("detail-skills-tab");
+  const chatTabPanel = document.getElementById("detail-chat-tab");
   document.querySelectorAll(".detail-tab").forEach((btn) => {
     btn.addEventListener("click", () => {
       document.querySelectorAll(".detail-tab").forEach((b) => b.classList.remove("active"));
@@ -206,8 +210,12 @@
       activeDetailTab = btn.dataset.detailTab;
       boardTabPanel.classList.toggle("active", activeDetailTab === "board");
       skillsTabPanel.classList.toggle("active", activeDetailTab === "skills");
+      chatTabPanel.classList.toggle("active", activeDetailTab === "chat");
       if (activeDetailTab === "skills") {
         refreshRunSkills();
+      }
+      if (activeDetailTab === "chat") {
+        refreshChat();
       }
     });
   });
@@ -327,6 +335,125 @@
   document.getElementById("run-skill-close").addEventListener("click", () => {
     runSkillEditor.hidden = true;
     selectedRunSkillName = null;
+  });
+
+  // -----------------------------------------------------------------
+  // Chat: an operator-facing UI over the inbox routes (steer/question/info
+  // messages the controller drains, and its replies to them). Not a
+  // chatbot -- no LLM is called from here.
+  // -----------------------------------------------------------------
+  const chatThread = document.getElementById("chat-thread");
+  const chatForm = document.getElementById("chat-form");
+  const chatText = document.getElementById("chat-text");
+  const chatType = document.getElementById("chat-type");
+  const chatSend = document.getElementById("chat-send");
+  const chatError = document.getElementById("chat-error");
+  let chatMessagesCache = [];
+
+  function formatTs(ts) {
+    if (!ts) return "";
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return ts;
+    return d.toLocaleString();
+  }
+
+  function renderChat() {
+    chatThread.innerHTML = "";
+    if (chatMessagesCache.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "hint";
+      empty.textContent = "No messages yet";
+      chatThread.appendChild(empty);
+      return;
+    }
+    for (const m of chatMessagesCache) {
+      const outWrap = document.createElement("div");
+      outWrap.className = "chat-bubble chat-bubble-out";
+
+      const badge = document.createElement("span");
+      badge.className = "badge badge-library";
+      badge.textContent = m.type || "steer";
+      outWrap.appendChild(badge);
+
+      const outText = document.createElement("p");
+      outText.textContent = m.text;
+      outWrap.appendChild(outText);
+
+      const outMeta = document.createElement("span");
+      outMeta.className = "hint";
+      outMeta.textContent = formatTs(m.ts);
+      outWrap.appendChild(outMeta);
+
+      chatThread.appendChild(outWrap);
+
+      if (m.reply) {
+        const inWrap = document.createElement("div");
+        inWrap.className = "chat-bubble chat-bubble-in";
+
+        const inText = document.createElement("p");
+        inText.textContent = m.reply;
+        inWrap.appendChild(inText);
+
+        const inMeta = document.createElement("span");
+        inMeta.className = "hint";
+        inMeta.textContent = formatTs(m.replied_ts);
+        inWrap.appendChild(inMeta);
+
+        chatThread.appendChild(inWrap);
+      } else {
+        const pending = document.createElement("p");
+        pending.className = "hint chat-pending";
+        pending.textContent = "Awaiting reply...";
+        chatThread.appendChild(pending);
+      }
+    }
+    chatThread.scrollTop = chatThread.scrollHeight;
+  }
+
+  async function refreshChat() {
+    if (!selectedSessionId) return;
+    try {
+      const data = await fetchJson(
+        "/api/sessions/" + encodeURIComponent(selectedSessionId) + "/inbox"
+      );
+      if (!data) return;
+      chatMessagesCache = data.messages || [];
+      renderChat();
+    } catch (err) {
+      console.error("failed to refresh chat", err);
+    }
+  }
+
+  chatForm.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    if (!selectedSessionId) return;
+    const text = chatText.value.trim();
+    if (!text) return;
+    chatError.hidden = true;
+    chatError.textContent = "";
+    chatSend.disabled = true;
+    try {
+      const res = await fetch(
+        "/api/sessions/" + encodeURIComponent(selectedSessionId) + "/inbox",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({ type: chatType.value, text }),
+        }
+      );
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "send failed: " + res.status);
+      }
+      chatText.value = "";
+      await refreshChat();
+    } catch (err) {
+      chatError.textContent = "Failed to send: " + err.message;
+      chatError.hidden = false;
+    } finally {
+      chatSend.disabled = false;
+    }
   });
 
   // -----------------------------------------------------------------
