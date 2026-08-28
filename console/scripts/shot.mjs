@@ -79,7 +79,11 @@ const CONSOLE_DIR = path.resolve(__dirname, "..");
 const CHROME_PATH =
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
-const PORT = 4999;
+// Port is overridable so concurrent tasks in the same run can each drive
+// their own console instance (and never accidentally screenshot another
+// worktree's CSS through a server someone else already had listening).
+// Default is unchanged.
+const PORT = Number(process.env.LIBERTA_SHOT_PORT || 4999);
 const BASE_URL = `http://localhost:${PORT}`;
 const TEST_PASSWORD = "libtest";
 const TEST_SECRET = "libtestsecret";

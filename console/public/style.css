@@ -644,42 +644,334 @@ button.logout {
 }
 
 /* =========================================================================
-   Chat panel (t4) -- functional-only styling; t5 owns the visual polish.
-   Keep this block self-contained so t5's styling pass doesn't conflict.
+   Chat panel (t4 markup) -- visual design + a11y pass owned by t5.
+   Everything chat-related lives between this banner and the
+   `end chat panel` marker; nothing outside it is touched, so a
+   concurrent edit elsewhere in this file merges cleanly.
+
+   Direction (you -> controller vs controller -> you) is NEVER carried by
+   colour alone: each bubble is aligned to its own side, has a distinct
+   squared "tail" corner, and carries a literal text label in the DOM
+   ("You" / "Controller reply"). A greyscale print still parses.
    ========================================================================= */
-#chat-thread {
-  max-height: 360px;
-  overflow-y: auto;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  padding: var(--space-3);
+
+/* Panel shell: thread scrolls, composer stays pinned underneath it, and
+   the whole thing is bounded so it can never blow out the detail card or
+   give the page a second scrollbar. */
+#detail-chat-tab.active {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+#detail-chat-tab > .hint {
+  /* --text-muted (#8a839c) is only 3.6:1 on white and fails AA here;
+     --text-secondary is 6.95:1. */
+  color: var(--text-secondary);
   margin-bottom: var(--space-3);
 }
 
-.chat-bubble {
-  margin-bottom: var(--space-2);
-  padding: var(--space-2);
-  border-radius: var(--radius-md);
-}
-
-.chat-bubble p {
-  margin: 0.2rem 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.chat-bubble-out {
-  background: var(--bg-surface);
+/* -------------------------------------------------------------- thread */
+#chat-thread {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-3);
+  min-height: 120px;
+  max-height: min(48vh, 420px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--bg-surface-alt);
   border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  margin-bottom: var(--space-4);
 }
 
+/* The thread is a scrollable region, so it must be reachable by keyboard
+   (axe: scrollable-region-focusable) -- which means it needs a focus ring. */
+#chat-thread:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.chat-empty {
+  margin: auto 0;
+  text-align: center;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+/* ------------------------------------------------------------- bubbles */
+.chat-bubble {
+  max-width: 78%;
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  box-shadow: var(--shadow-card);
+}
+
+.chat-bubble-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.chat-role {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.chat-text {
+  margin: 0;
+  white-space: pre-wrap;
+  /* Long URLs / unbroken tokens must break inside the bubble rather than
+     widening it and pushing a horizontal scrollbar onto the page. */
+  overflow-wrap: anywhere;
+  word-break: normal;
+  font-size: 0.85rem;
+  line-height: 1.55;
+  color: var(--text-primary);
+}
+
+.chat-ts {
+  margin: 0;
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+/* Outgoing: right-aligned, white, squared bottom-RIGHT corner. */
+.chat-bubble-out {
+  align-self: flex-end;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color-strong);
+  border-radius: var(--radius-lg) var(--radius-lg) var(--radius-sm) var(--radius-lg);
+}
+
+.chat-bubble-out .chat-role {
+  color: var(--text-secondary);
+}
+
+/* Incoming: left-aligned, tinted, accent bar, squared bottom-LEFT corner. */
 .chat-bubble-in {
+  align-self: flex-start;
   background: var(--color-primary-light);
-  margin-left: var(--space-4);
+  border: 1px solid transparent;
+  border-left: 3px solid var(--color-primary);
+  border-radius: var(--radius-lg) var(--radius-lg) var(--radius-lg) var(--radius-sm);
 }
 
+.chat-bubble-in .chat-role {
+  color: var(--color-primary-text);
+}
+
+.chat-bubble-in .chat-ts {
+  color: var(--text-secondary);
+}
+
+/* Awaiting reply: sits on the incoming side as an outlined ghost bubble,
+   so the "a reply belongs here and hasn't arrived" gap is visible as a
+   shape, not just as grey text. */
 .chat-pending {
-  margin: 0 0 var(--space-2);
+  align-self: flex-start;
+  max-width: 78%;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.76rem;
+  font-style: italic;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px dashed var(--border-color-strong);
+  border-radius: var(--radius-lg) var(--radius-lg) var(--radius-lg) var(--radius-sm);
+}
+
+.chat-pending::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--text-muted);
+  animation: chat-pending-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes chat-pending-pulse {
+  0%, 100% { opacity: 0.35; }
+  50%      { opacity: 1; }
+}
+
+/* ----------------------------------------------- message type badges */
+/* Reuses the existing .badge / .status-pill vocabulary and the status
+   colour tokens rather than inventing a second palette. The badge text
+   always names the type, so the tint is decoration, never the signal. */
+.chat-type-badge {
+  font-size: 0.68rem;
+  letter-spacing: 0.03em;
+}
+.chat-type-steer {
+  background: var(--status-info-bg);
+  color: var(--status-info-text);
+}
+.chat-type-question {
+  background: var(--status-warning-bg);
+  /* --status-warning-text (#a85e07) is 4.41:1 on --status-warning-bg,
+     just under AA for this 11px badge; this darker shade of the same
+     amber is 4.98:1. Scoped to the chat badge only. */
+  color: #9c5706;
+}
+.chat-type-info,
+.chat-type-other {
+  background: var(--status-neutral-bg);
+  color: var(--status-neutral-text);
+}
+
+/* ------------------------------------------------------------ composer */
+#chat-form {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-color);
+}
+
+#chat-form label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+#chat-form label[for="chat-text"] {
+  grid-column: 1 / -1;
+  margin-top: var(--space-2);
+}
+
+#chat-type {
+  width: auto;
+  min-width: 11rem;
+  justify-self: start;
+  font-size: 0.82rem;
+}
+
+#chat-text {
+  grid-column: 1 / -1;
+  margin: 0;
+  min-height: 84px;
+  font-family: var(--font-sans);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  resize: vertical; /* vertical only -- horizontal resize would break the grid */
+}
+
+#chat-form .editor-actions {
+  grid-column: 1 / -1;
+  margin-top: 0;
+  justify-content: flex-end;
+}
+
+/* Focus must be visible and clearly different from hover (hover only
+   darkens the button / lightens the border; focus adds an offset ring). */
+#chat-form select:focus-visible,
+#chat-form textarea:focus-visible,
+#chat-form button:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 4px var(--color-primary-light);
+}
+
+#chat-send {
+  min-width: 7rem;
+}
+
+/* --------------------------------------------------------- inline error */
+/* Keep the id-level display rule from beating [hidden]. */
+#chat-error[hidden] {
+  display: none;
+}
+
+#chat-error {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--status-danger-bg);
+  color: var(--status-danger-text);
+  border-left: 3px solid var(--status-danger-text);
+  border-radius: var(--radius-sm);
+  font-size: 0.8rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+#chat-error::before {
+  content: "!";
+  flex: 0 0 auto;
+  width: 1.05rem;
+  height: 1.05rem;
+  margin-top: 0.05rem;
+  border-radius: 50%;
+  background: var(--status-danger-text);
+  color: var(--bg-surface);
+  font-size: 0.72rem;
+  line-height: 1.05rem;
+  text-align: center;
+}
+
+/* ------------------------------------------------------------ narrow */
+@media (max-width: 720px) {
+  #chat-thread {
+    padding: var(--space-3);
+    gap: var(--space-2);
+    max-height: min(52vh, 360px);
+  }
+  .chat-bubble,
+  .chat-pending {
+    max-width: 92%;
+  }
+  #chat-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  #chat-type {
+    width: 100%;
+    min-width: 0;
+  }
+  #chat-form .editor-actions {
+    justify-content: stretch;
+  }
+  #chat-send {
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #detail-chat-tab *,
+  #detail-chat-tab *::before,
+  #detail-chat-tab *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .chat-pending::before {
+    opacity: 1;
+  }
 }
 /* end chat panel (t4) */
 
