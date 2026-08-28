@@ -25,18 +25,33 @@
 // treated as empty. All index writes go through a temp file + rename so a
 // concurrent reader can never observe a truncated registry.
 //
+// SAFETY (index.json is SHARED, so NEVER persist a stale snapshot): the
+// index is written concurrently by scripts/_log-event.mjs (`--status
+// done`). This tool reads it up front -- to validate BEFORE mutating
+// anything -- and only then creates/removes fixture directories, so the
+// in-memory copy is already stale by the time we would write. Persisting
+// that snapshot would silently REVERT every status a controller wrote in
+// between, including a live run's. So the snapshot decides WHAT to change;
+// the index is re-read IMMEDIATELY before the write and only the fixture
+// entries are merged onto that fresh copy. A shape change between the two
+// reads aborts; a change between the merge and the rename redoes the
+// merge.
+//
 // Usage:
 //   node console/scripts/fixture-sessions.mjs create
 //   node console/scripts/fixture-sessions.mjs clean
 
 import { promises as fs } from "node:fs";
-import fssync from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
 const RUNS_DIR = path.join(os.homedir(), ".claude", "liberta-runs");
 const INDEX_PATH = path.join(RUNS_DIR, "index.json");
 const FIXTURE_PREFIX = "zz-fixture-";
+// How many times to redo the read->merge->write cycle when a concurrent
+// writer changes index.json underneath us before giving up (and writing
+// nothing) rather than clobbering it.
+const INDEX_COMMIT_ATTEMPTS = 5;
 
 // Lineage (`parent_session_id`) is deliberately shaped as a GRAPH, not a
 // single tree, so lineage/mindmap views have real edge data to render:
@@ -112,6 +127,9 @@ class CorruptIndexError extends Error {
 //     hand-mangled registry. NEVER write in this case; a failed read must
 //     never be laundered into an empty index that then gets persisted over
 //     real data. Abort loudly instead.
+// Returns { raw, index }. `raw` is the exact bytes on disk, or null when
+// the index is genuinely ABSENT -- callers use it both to detect an
+// absent->present flip and to confirm nothing changed before renaming.
 async function readIndexOrThrow() {
   let raw;
   try {
@@ -119,7 +137,7 @@ async function readIndexOrThrow() {
   } catch (err) {
     if (err && err.code === "ENOENT") {
       // Genuinely absent: an empty index is the correct starting point.
-      return { active_session_id: null, sessions: [] };
+      return { raw: null, index: { active_session_id: null, sessions: [] } };
     }
     // Present but unreadable (EACCES, EISDIR, EIO, ...) -- do not guess.
     throw new CorruptIndexError(`could not read it (${err && err.code ? err.code : err})`);
@@ -152,7 +170,49 @@ async function readIndexOrThrow() {
       );
     }
   }
-  return parsed;
+  return { raw, index: parsed };
+}
+
+// A concurrent status write changes VALUES inside sessions[] -- expected,
+// and exactly what the merge below preserves. A change to the index's own
+// top-level key set, or the file appearing/disappearing between the two
+// reads, is a different writer or a different format: refuse rather than
+// merge blind.
+function assertShapeUnchanged(snapshot, fresh) {
+  if ((snapshot.raw === null) !== (fresh.raw === null)) {
+    throw new CorruptIndexError(
+      snapshot.raw === null
+        ? "it was absent when this command started but exists now " +
+          "(another writer created it)"
+        : "it existed when this command started but is absent now"
+    );
+  }
+  const before = Object.keys(snapshot.index).sort().join(",");
+  const after = Object.keys(fresh.index).sort().join(",");
+  if (before !== after) {
+    throw new CorruptIndexError(
+      `its shape changed between read and write (top-level keys ` +
+        `"${before}" -> "${after}")`
+    );
+  }
+}
+
+// Re-read the index, apply ONLY this tool's fixture delta to that fresh
+// copy, and write it -- never the stale snapshot. The rename only happens
+// while the file still holds the bytes we merged onto; otherwise the merge
+// is redone against the newer bytes. Returns the merged index.
+async function commitIndex(snapshot, applyDelta) {
+  for (let attempt = 1; attempt <= INDEX_COMMIT_ATTEMPTS; attempt += 1) {
+    const fresh = await readIndexOrThrow(); // corrupt now => abort, never write
+    assertShapeUnchanged(snapshot, fresh);
+    const merged = applyDelta(fresh.index);
+    if (await writeIndex(merged, fresh.raw)) return merged;
+    // Lost the race between merge and rename -- redo it.
+  }
+  throw new Error(
+    `gave up after ${INDEX_COMMIT_ATTEMPTS} attempts: ${INDEX_PATH} keeps ` +
+      `changing underneath us; nothing written`
+  );
 }
 
 // Atomic: write a temp file in the same directory, then rename over the
@@ -160,11 +220,31 @@ async function readIndexOrThrow() {
 // (e.g. the controller's scripts/_log-event.mjs) sees either the old index
 // or the new one -- never a truncated one. Matches the writeJsonAtomic
 // helper in scripts/_log-event.mjs and console/scripts/backfill-parents.mjs.
-async function writeIndex(idx) {
+// `expectedRaw` is the bytes the caller merged onto (null == the index was
+// absent). The rename is only performed while the target still holds
+// exactly those bytes, so a status write that landed while we were merging
+// is never clobbered; `false` is returned instead so the caller can redo
+// the merge. Returns true when the write landed.
+async function writeIndex(idx, expectedRaw) {
+  const body = JSON.stringify(idx, null, 2) + "\n";
+  // Nothing to change: leave the file (and its mtime) completely alone.
+  if (body === expectedRaw) return true;
   const tmp = `${INDEX_PATH}.tmp-${process.pid}-${Date.now()}`;
-  await fs.writeFile(tmp, JSON.stringify(idx, null, 2) + "\n", "utf8");
+  await fs.writeFile(tmp, body, "utf8");
   try {
+    let current;
+    try {
+      current = await fs.readFile(INDEX_PATH, "utf8");
+    } catch (err) {
+      if (err && err.code === "ENOENT") current = null;
+      else throw err;
+    }
+    if (current !== expectedRaw) {
+      await fs.rm(tmp, { force: true }).catch(() => {});
+      return false;
+    }
     await fs.rename(tmp, INDEX_PATH);
+    return true;
   } catch (err) {
     await fs.rm(tmp, { force: true }).catch(() => {});
     throw err;
@@ -281,24 +361,30 @@ async function create() {
 
   // Validate the index BEFORE writing any fixture directories, so a corrupt
   // index aborts without leaving half-created fixtures behind.
-  const idx = await readIndexOrThrow();
+  const snapshot = await readIndexOrThrow();
 
   for (const fixture of FIXTURES) {
     await createOne(fixture);
   }
 
-  // Idempotent: drop any pre-existing fixture entries before re-adding,
-  // never touch non-fixture entries.
-  const nonFixtureSessions = idx.sessions.filter((s) => !isFixtureId(s && s.id));
   const fixtureSessions = FIXTURES.map((f) => ({
     id: f.id,
     project_path: "/tmp/zz-fixture-project",
     status: f.status,
     parent_session_id: f.parent === undefined ? null : f.parent,
   }));
-  idx.sessions = [...nonFixtureSessions, ...fixtureSessions];
-  // Never change which session is active.
-  await writeIndex(idx);
+  // Merged onto a FRESH read (see the SAFETY note at the top), never onto
+  // `snapshot`: idempotent, drops any pre-existing fixture entries before
+  // re-adding, and copies every non-fixture entry -- including any status
+  // a controller wrote while we were creating directories -- verbatim.
+  // Never changes which session is active.
+  await commitIndex(snapshot, (fresh) => ({
+    ...fresh,
+    sessions: [
+      ...fresh.sessions.filter((s) => !isFixtureId(s && s.id)),
+      ...fixtureSessions,
+    ],
+  }));
 
   process.stdout.write(`created ${FIXTURES.length} fixture sessions under ${RUNS_DIR}\n`);
 }
@@ -307,7 +393,7 @@ async function clean() {
   // Validate the index BEFORE removing anything. If it is corrupt we abort
   // without having touched a single directory, so the store is left exactly
   // as we found it.
-  const idx = await readIndexOrThrow();
+  const snapshot = await readIndexOrThrow();
 
   // Remove fixture directories: enumerate RUNS_DIR ourselves and only
   // ever act on entries whose name starts with FIXTURE_PREFIX -- never
@@ -325,18 +411,21 @@ async function clean() {
     await removeOne(entry.name);
   }
 
-  const before = idx.sessions.length;
-  idx.sessions = idx.sessions.filter((s) => !isFixtureId(s && s.id));
-  const removed = before - idx.sessions.length;
-  // active_session_id is never a fixture id in practice, but guard
-  // anyway rather than assume.
-  if (isFixtureId(idx.active_session_id)) {
-    idx.active_session_id = null;
-  }
-  // Only rewrite when there is something to change, or when a valid index
-  // already exists on disk. Never create an index that was absent.
-  if (removed > 0 || fssync.existsSync(INDEX_PATH)) {
-    await writeIndex(idx);
+  // Never create an index that was absent (an absent index also has no
+  // fixture entries to remove, so there is nothing to write either way).
+  let removed = 0;
+  if (snapshot.raw !== null) {
+    // Merged onto a FRESH read, never onto `snapshot`: only fixture
+    // entries are dropped, every other entry is copied verbatim.
+    await commitIndex(snapshot, (fresh) => {
+      const kept = fresh.sessions.filter((s) => !isFixtureId(s && s.id));
+      removed = fresh.sessions.length - kept.length;
+      const merged = { ...fresh, sessions: kept };
+      // active_session_id is never a fixture id in practice, but guard
+      // anyway rather than assume.
+      if (isFixtureId(merged.active_session_id)) merged.active_session_id = null;
+      return merged;
+    });
   }
 
   process.stdout.write(`cleaned fixture sessions from ${RUNS_DIR} (removed ${removed} index entries)\n`);

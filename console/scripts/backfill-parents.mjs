@@ -34,6 +34,23 @@
 // atomic pattern scripts/_log-event.mjs uses. No path outside
 // ~/.claude/liberta-runs/ is ever written.
 //
+// SAFETY (index.json is SHARED, so NEVER persist a stale snapshot):
+//   index.json is the registry for EVERY run and is written concurrently
+//   by scripts/_log-event.mjs (`--status done` and friends). This tool
+//   reads it once up front, then walks every session on disk -- an
+//   unbounded amount of wall-clock time -- so the snapshot in memory is
+//   routinely out of date by the time we would write. Writing that whole
+//   snapshot back would silently REVERT every status a controller wrote
+//   in the meantime, including a protected session's: the per-session
+//   guards below do not cover this, because index.json sits OUTSIDE every
+//   session directory.
+//   So the snapshot is used only to DECIDE what to change. The index is
+//   re-read IMMEDIATELY before writing and only this tool's own deltas
+//   (parent_session_id on named entries) are merged onto that fresh copy.
+//   If the fresh copy's shape changed, or it no longer parses, we abort
+//   without writing. If the file changes again between the merge and the
+//   rename, the merge is redone against the newer bytes.
+//
 // Lineage is supplied by the CALLER, never hardcoded here:
 //   --parent <child-id>=<parent-id>   (repeatable; parent may be "null")
 //   --parents-file <path>             JSON: {"child":"parent", ...}
@@ -140,6 +157,38 @@ function writeJsonAtomic(filePath, obj, protectedIds) {
   assertNotLiveStore(tmp, ids);
   fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + "\n");
   fs.renameSync(tmp, filePath);
+}
+
+// Same atomic temp+rename and the same two guards, but the rename is only
+// performed while the target still holds exactly the bytes the caller
+// merged onto (`expectedRaw`). If another process rewrote the file in the
+// meantime, the temp file is discarded and `false` is returned so the
+// caller can redo the merge against the newer bytes. This shrinks the
+// read->write window to the gap between one read and one rename.
+function writeAtomicIfUnchanged(filePath, body, expectedRaw, protectedIds) {
+  const ids = [...protectedIds];
+  assertInsideRunsDir(filePath);
+  assertNotLiveStore(filePath, ids);
+  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  assertInsideRunsDir(tmp);
+  assertNotLiveStore(tmp, ids);
+  fs.writeFileSync(tmp, body);
+  let current;
+  try {
+    current = fs.readFileSync(filePath, "utf8");
+  } catch {
+    current = null;
+  }
+  if (current !== expectedRaw) {
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch {
+      /* best effort */
+    }
+    return false;
+  }
+  fs.renameSync(tmp, filePath);
+  return true;
 }
 
 function log(line) {
@@ -255,6 +304,124 @@ function computeProtected(index, ids, indexSessions) {
 }
 
 // ---------------------------------------------------------------------
+// index.json: merge deltas onto a FRESH read, never persist the snapshot
+// ---------------------------------------------------------------------
+
+const INDEX_COMMIT_ATTEMPTS = 5;
+
+// A refusal to write index.json. Distinct from a bug so main() can report
+// it as a clean abort: nothing was written to the registry.
+class IndexAbort extends Error {}
+
+// Read index.json for the commit step. Unlike readJsonSafe this NEVER
+// launders a failed read into an empty index: at commit time we already
+// know the file parsed once, so anything unreadable/unparseable/wrong
+// shaped now is a reason to abort, never to overwrite.
+function readIndexForCommit() {
+  let raw;
+  try {
+    raw = fs.readFileSync(INDEX_PATH, "utf8");
+  } catch (err) {
+    throw new IndexAbort(
+      `${INDEX_PATH} became unreadable between read and write ` +
+        `(${(err && err.code) || err}); nothing written`
+    );
+  }
+  if (!raw.trim()) {
+    throw new IndexAbort(
+      `${INDEX_PATH} is empty (truncated mid-write?); nothing written`
+    );
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new IndexAbort(
+      `${INDEX_PATH} is no longer valid JSON (${err.message}); nothing written`
+    );
+  }
+  if (
+    !parsed ||
+    typeof parsed !== "object" ||
+    Array.isArray(parsed) ||
+    !Array.isArray(parsed.sessions)
+  ) {
+    throw new IndexAbort(
+      `${INDEX_PATH} no longer has the expected shape ` +
+        `({ active_session_id, sessions: [] }); nothing written`
+    );
+  }
+  return { raw, index: parsed };
+}
+
+// A concurrent status write changes VALUES inside sessions[] -- that is
+// expected and is exactly what the merge preserves. A change to the
+// index's own top-level key set is something else entirely (a different
+// writer, a different format), so refuse rather than merge blind.
+function assertShapeUnchanged(snapshot, fresh) {
+  const before = Object.keys(snapshot).sort().join(",");
+  const after = Object.keys(fresh).sort().join(",");
+  if (before !== after) {
+    throw new IndexAbort(
+      `${INDEX_PATH} changed shape between read and write ` +
+        `(top-level keys "${before}" -> "${after}"); nothing written`
+    );
+  }
+}
+
+// Apply `deltas` ([{ sessionId, parent }]) to a FRESHLY read index and
+// write it. Every other key, value and the array ordering of that fresh
+// copy are preserved exactly, so concurrent status writes survive.
+// Protection is RE-DERIVED from the fresh copy: a session that became the
+// active session, or started running, since the snapshot is skipped.
+function commitIndexDeltas(snapshot, deltas, protectedIds) {
+  for (let attempt = 1; attempt <= INDEX_COMMIT_ATTEMPTS; attempt += 1) {
+    const { raw, index: fresh } = readIndexForCommit();
+    assertShapeUnchanged(snapshot, fresh);
+
+    const freshActive =
+      typeof fresh.active_session_id === "string" ? fresh.active_session_id : null;
+    const applied = [];
+    const skipped = [];
+    for (const { sessionId, parent } of deltas) {
+      const entry = fresh.sessions.find((s) => s && s.id === sessionId);
+      if (!entry) {
+        skipped.push(`${sessionId} (entry no longer in index)`);
+        continue;
+      }
+      if (sessionId === freshActive || statusOf(sessionId, entry) === "running") {
+        skipped.push(`${sessionId} (became protected since the read)`);
+        continue;
+      }
+      const has = Object.prototype.hasOwnProperty.call(entry, "parent_session_id");
+      const current = has ? entry.parent_session_id : undefined;
+      if (has && current !== null && current !== undefined) {
+        skipped.push(`${sessionId} (another writer already set it)`);
+        continue;
+      }
+      if (has && parent === null) {
+        skipped.push(`${sessionId} (already null)`);
+        continue;
+      }
+      entry.parent_session_id = parent;
+      applied.push(sessionId);
+    }
+    if (!applied.length) return { wrote: false, applied, skipped };
+
+    const body = JSON.stringify(fresh, null, 2) + "\n";
+    if (writeAtomicIfUnchanged(INDEX_PATH, body, raw, protectedIds)) {
+      return { wrote: true, applied, skipped };
+    }
+    // Lost the race between merge and rename -- redo it against the newer
+    // bytes rather than overwrite them.
+  }
+  throw new IndexAbort(
+    `gave up after ${INDEX_COMMIT_ATTEMPTS} attempts: ${INDEX_PATH} keeps ` +
+      `changing underneath us; nothing written`
+  );
+}
+
+// ---------------------------------------------------------------------
 
 function main() {
   let opts;
@@ -305,7 +472,9 @@ function main() {
       : "protected (never written): none"
   );
 
-  let indexChanged = false;
+  // Deltas for index.json, applied at the very end onto a FRESH read of
+  // the file rather than onto this stale snapshot.
+  const indexDeltas = [];
   let writes = 0;
   let noops = 0;
   let skipped = 0;
@@ -409,24 +578,34 @@ function main() {
       noops += 1;
       log(`${sessionId}: no-op (index entry already parent_session_id=null)`);
     } else {
-      entry.parent_session_id = parent;
-      indexChanged = true;
+      indexDeltas.push({ sessionId, parent });
       log(
-        `${sessionId}: set index entry parent_session_id=${JSON.stringify(parent)}` +
-          (DRY_RUN ? " [dry-run]" : "")
+        `${sessionId}: index entry parent_session_id=${JSON.stringify(parent)}` +
+          (DRY_RUN ? " [dry-run]" : " [queued]")
       );
     }
   }
 
-  if (indexChanged && !DRY_RUN) {
-    // Adds only the missing key on the entries above; every other key,
-    // value and the array ordering are preserved exactly. index.json
-    // lives outside every session directory, so this is permitted even
-    // when some sessions are protected -- no protected session's entry
-    // was modified.
-    writeJsonAtomic(INDEX_PATH, index, protectedList);
-    writes += 1;
-    log(`wrote ${INDEX_PATH}`);
+  if (indexDeltas.length && !DRY_RUN) {
+    // NEVER write the `index` snapshot read at the top of this function:
+    // it is minutes stale and would revert every status a controller wrote
+    // in the meantime. Re-read now and merge only the deltas above onto
+    // that fresh copy. index.json lives outside every session directory,
+    // so writing it is permitted even when some sessions are protected --
+    // and no protected session's entry is ever part of a delta.
+    const result = commitIndexDeltas(index, indexDeltas, protectedList);
+    for (const note of result.skipped) {
+      log(`index entry skipped at commit: ${note}`);
+    }
+    if (result.wrote) {
+      writes += 1;
+      log(
+        `wrote ${INDEX_PATH} (merged ${result.applied.length} ` +
+          `parent_session_id delta(s) onto a fresh read)`
+      );
+    } else {
+      log(`${INDEX_PATH} already up to date -- nothing written`);
+    }
   }
 
   log(
@@ -441,6 +620,10 @@ function main() {
 try {
   process.exit(main());
 } catch (err) {
+  if (err instanceof IndexAbort) {
+    process.stderr.write(`ABORTED: ${err.message}\n`);
+    process.exit(1);
+  }
   process.stderr.write(`FATAL: ${(err && err.message) || err}\n`);
   process.exit(1);
 }
