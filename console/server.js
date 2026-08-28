@@ -66,6 +66,17 @@ const PORT = process.env.PORT ? Number(process.env.PORT) : 4177;
 const HOST = process.env.LIBERTA_CONSOLE_HOST || "0.0.0.0";
 
 const app = express();
+// Express 4 disables case-sensitive routing by default, which means a
+// handler registered at "/api/sessions/:id/inbox" ALSO answers
+// "/API/sessions/<id>/inbox" -- while req.path stays "/API/...". Every
+// middleware below that decides what to do by testing req.path (the auth
+// gate's "/api/" branch, the CSRF gate) would then be looking at a string
+// that doesn't match the route that is about to run, so a case-variant
+// path slips past them and still reaches the handler. Making routing
+// case-sensitive collapses that gap: "/API/..." matches no route at all
+// and 404s. The path tests below are ALSO written case-insensitively, so
+// the defence does not depend on this single setting staying put.
+app.set("case sensitive routing", true);
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 app.use(cookieParser());
@@ -126,7 +137,19 @@ async function resolvePrincipal(req) {
   }
 }
 
+// Is this request headed for the JSON API? Compared case-insensitively
+// so that a case-variant path can never be classified differently from
+// the route it would actually reach (see the routing note at boot).
+function isApiPath(req) {
+  return typeof req.path === "string" && req.path.toLowerCase().startsWith("/api/");
+}
+
 app.use(async (req, res, next) => {
+  // PUBLIC_PATHS stays an EXACT match: it is an allowlist, and widening
+  // an allowlist by case-folding it would let "/LOGIN" (or any other
+  // variant) skip auth. A case-variant public path simply isn't public;
+  // it falls through to the checks below and, with case-sensitive
+  // routing on, 404s after authenticating.
   if (PUBLIC_PATHS.has(req.path)) {
     return next();
   }
@@ -135,7 +158,7 @@ app.use(async (req, res, next) => {
     req.principal = principal;
     return next();
   }
-  if (req.path.startsWith("/api/")) {
+  if (isApiPath(req)) {
     return res.status(401).json({ error: "unauthorized" });
   }
   return res.redirect("/login");
@@ -192,7 +215,8 @@ function isCrossSiteRequest(req) {
 }
 
 app.use((req, res, next) => {
-  if (!req.path.startsWith("/api/")) return next();
+  // Case-insensitive on purpose -- see isApiPath/the routing note above.
+  if (!isApiPath(req)) return next();
   if (CSRF_SAFE_METHODS.has(req.method)) return next();
 
   if (isCrossSiteRequest(req)) {
