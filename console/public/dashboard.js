@@ -379,11 +379,39 @@
     return d.toLocaleString();
   }
 
+  // Message direction must never be carried by colour alone (a colour-blind
+  // operator, or a greyscale print of a screenshot, has to parse the
+  // thread too), so every bubble gets a real text label in the DOM -- not
+  // a CSS ::before -- which also means the role=log live region announces
+  // "You" / "Controller reply" along with the message.
+  const CHAT_TYPES = ["steer", "question", "info"];
+
+  function chatBubbleHead(roleLabel, type) {
+    const head = document.createElement("div");
+    head.className = "chat-bubble-head";
+
+    const who = document.createElement("span");
+    who.className = "chat-role";
+    who.textContent = roleLabel;
+    head.appendChild(who);
+
+    if (type !== undefined) {
+      const badge = document.createElement("span");
+      // Only ever interpolate a class from a fixed allowlist; message
+      // .type comes off disk and is not trusted as a class name.
+      const safeType = CHAT_TYPES.indexOf(type) === -1 ? "other" : type;
+      badge.className = "badge chat-type-badge chat-type-" + safeType;
+      badge.textContent = type;
+      head.appendChild(badge);
+    }
+    return head;
+  }
+
   function renderChat() {
     chatThread.innerHTML = "";
     if (chatMessagesCache.length === 0) {
       const empty = document.createElement("p");
-      empty.className = "hint";
+      empty.className = "hint chat-empty";
       empty.textContent = "No messages yet";
       chatThread.appendChild(empty);
       return;
@@ -392,17 +420,15 @@
       const outWrap = document.createElement("div");
       outWrap.className = "chat-bubble chat-bubble-out";
 
-      const badge = document.createElement("span");
-      badge.className = "badge badge-library";
-      badge.textContent = m.type || "steer";
-      outWrap.appendChild(badge);
+      outWrap.appendChild(chatBubbleHead("You", m.type || "steer"));
 
       const outText = document.createElement("p");
+      outText.className = "chat-text";
       outText.textContent = m.text;
       outWrap.appendChild(outText);
 
       const outMeta = document.createElement("span");
-      outMeta.className = "hint";
+      outMeta.className = "hint chat-ts";
       outMeta.textContent = formatTs(m.ts);
       outWrap.appendChild(outMeta);
 
@@ -412,12 +438,15 @@
         const inWrap = document.createElement("div");
         inWrap.className = "chat-bubble chat-bubble-in";
 
+        inWrap.appendChild(chatBubbleHead("Controller reply"));
+
         const inText = document.createElement("p");
+        inText.className = "chat-text";
         inText.textContent = m.reply;
         inWrap.appendChild(inText);
 
         const inMeta = document.createElement("span");
-        inMeta.className = "hint";
+        inMeta.className = "hint chat-ts";
         inMeta.textContent = formatTs(m.replied_ts);
         inWrap.appendChild(inMeta);
 
