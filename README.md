@@ -78,3 +78,8 @@ npm install
 LIBERTA_CONSOLE_PASSWORD='pick something' npm start
 # → http://localhost:4177
 ```
+
+## The name
+
+Liberta is named after a friend of mine who has been fighting ADHD all her
+life. The name is a nod to her persistence.
