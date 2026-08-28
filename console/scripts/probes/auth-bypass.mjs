@@ -43,7 +43,18 @@ export async function run(page) {
 
   // Now un-authenticated: this renders {"error":"unauthorized"} as a
   // plain-text/JSON document with no password input anywhere.
-  await page.goto("http://localhost:4999/api/sessions", {
-    waitUntil: "networkidle0",
-  });
+  //
+  // The URL is derived from the page's OWN origin, never hardcoded. It
+  // used to be a literal http://localhost:4999/api/sessions, from back
+  // when shot.mjs pinned that port. shot.mjs now picks a free port
+  // dynamically and addresses its child console by the literal
+  // 127.0.0.1, so the hardcoded URL pointed at nothing this run started:
+  // the probe still failed the capture, but it tripped shot.mjs's
+  // SAME-ORIGIN condition (or just failed to load) instead of the
+  // CONTENTTYPE condition this probe exists to exercise. That is a
+  // silently degraded regression test -- it would have kept "passing"
+  // even if the contentType guard were deleted. Staying on-origin keeps
+  // it testing the thing it was written for.
+  const target = new URL("/api/sessions", page.url()).href;
+  await page.goto(target, { waitUntil: "networkidle0" });
 }
