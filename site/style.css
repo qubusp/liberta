@@ -1,0 +1,241 @@
+/* Liberta — public site stylesheet. Hand-written, no build step. */
+
+:root {
+  --color-primary: #6e49cb;
+  --color-primary-dark: #5a3aa8;
+  --color-primary-light: #f1ebfb;
+  --color-primary-text: #4c2f9e;
+  --sidebar-bg: #29173f;
+
+  --color-text: #1c1420;
+  --color-text-muted: #4a3f52;
+  --color-bg: #ffffff;
+  --color-bg-alt: #f7f4fb;
+  --color-border: #ddd2ec;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
+    Arial, sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+
+  --max-width: 860px;
+  --radius: 8px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  * {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  color: var(--color-text);
+  background: var(--color-bg);
+  line-height: 1.6;
+}
+
+.wrap {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  padding: 0 1.25rem;
+}
+
+/* Skip link */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  background: var(--color-primary);
+  color: #fff;
+  padding: 0.75rem 1.25rem;
+  z-index: 100;
+  border-radius: 0 0 var(--radius) 0;
+}
+
+.skip-link:focus {
+  left: 0;
+}
+
+/* Header */
+.site-header {
+  background: var(--sidebar-bg);
+  color: #fff;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.header-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  padding-top: 0.9rem;
+  padding-bottom: 0.9rem;
+}
+
+.wordmark {
+  margin: 0;
+  font-weight: 700;
+  font-size: 1.15rem;
+  letter-spacing: 0.02em;
+  color: #fff;
+}
+
+.nav-list {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.1rem;
+  margin: 0;
+  padding: 0;
+}
+
+.nav-list a {
+  color: #e6dcf7;
+  text-decoration: none;
+  font-size: 0.95rem;
+}
+
+.nav-list a:hover,
+.nav-list a:focus-visible {
+  color: #fff;
+  text-decoration: underline;
+}
+
+/* Focus visibility everywhere */
+a:focus-visible,
+button:focus-visible {
+  outline: 3px solid var(--color-primary);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* Hero */
+.hero {
+  padding: 3.5rem 1.25rem 2.5rem;
+}
+
+.hero h1 {
+  margin: 0 0 1rem;
+  font-size: clamp(2.1rem, 5vw, 3rem);
+  color: var(--color-primary-dark);
+}
+
+.lede {
+  font-size: 1.15rem;
+  color: var(--color-text-muted);
+  max-width: 62ch;
+}
+
+.license-note {
+  font-size: 0.95rem;
+  color: var(--color-text-muted);
+}
+
+/* Sections */
+.section {
+  padding: 2.5rem 1.25rem;
+}
+
+.section.alt {
+  background: var(--color-bg-alt);
+}
+
+.section h2 {
+  color: var(--color-primary-text);
+  font-size: 1.6rem;
+  margin-top: 0;
+}
+
+.section h3 {
+  font-size: 1.1rem;
+  margin-bottom: 0.35rem;
+  color: var(--color-text);
+}
+
+.feature-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 1.5rem;
+}
+
+.feature-list li {
+  border-left: 3px solid var(--color-primary);
+  padding-left: 1rem;
+}
+
+code {
+  font-family: var(--font-mono);
+  background: var(--color-primary-light);
+  color: var(--color-primary-text);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  font-size: 0.92em;
+  word-break: break-word;
+}
+
+.code-block {
+  background: var(--sidebar-bg);
+  color: #f1ebfb;
+  padding: 1rem 1.1rem;
+  border-radius: var(--radius);
+  overflow-x: auto;
+}
+
+.code-block code {
+  background: none;
+  color: inherit;
+  padding: 0;
+  font-size: 0.88rem;
+  white-space: pre;
+}
+
+.name-section p {
+  max-width: 62ch;
+}
+
+/* Footer */
+.site-footer {
+  border-top: 1px solid var(--color-border);
+  padding: 1.75rem 1.25rem;
+  color: var(--color-text-muted);
+  font-size: 0.9rem;
+}
+
+.site-footer a {
+  color: var(--color-primary-text);
+}
+
+/* Small screens */
+@media (max-width: 480px) {
+  .nav-list {
+    gap: 0.6rem 0.9rem;
+    font-size: 0.9rem;
+  }
+
+  .hero {
+    padding: 2.25rem 1rem 1.75rem;
+  }
+
+  .section {
+    padding: 1.75rem 1rem;
+  }
+}

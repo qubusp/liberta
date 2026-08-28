@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Liberta — an unattended orchestration harness for Claude Code</title>
+<meta name="description" content="Liberta is an unattended, long-running orchestration harness for Claude Code: a controller that never implements anything itself, fresh-context specialist subagents, independent verification, durable on-disk state, and hard budgets.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="site-header">
+  <div class="wrap header-inner">
+    <p class="wordmark">Liberta</p>
+    <nav aria-label="Primary">
+      <ul class="nav-list">
+        <li><a href="#why">Why</a></li>
+        <li><a href="#how">How it works</a></li>
+        <li><a href="#layout">Layout</a></li>
+        <li><a href="#installing">Installing</a></li>
+        <li><a href="#console">The console</a></li>
+        <li><a href="#name">The name</a></li>
+        <li><a href="https://github.com/qubusp/liberta">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+  <section class="hero wrap">
+    <h1>Liberta</h1>
+    <p class="lede">
+      An unattended, long-running orchestration harness for Claude Code. Give
+      it a goal and a project, and it keeps a thin controller loop alive on
+      disk, farming every real unit of work out to fresh-context specialist
+      subagents, double-checking each one independently before it counts as
+      done, and stopping — with a notification — on a clear terminal
+      condition instead of silently running forever or claiming victory
+      early.
+    </p>
+    <p class="license-note">MIT licensed — use it, fork it, sell it, whatever.</p>
+  </section>
+
+  <section id="why" class="section wrap" aria-labelledby="why-heading">
+    <h2 id="why-heading">Why</h2>
+    <p>
+      Long-horizon autonomous coding sessions fail in a small number of
+      predictable ways: the agent tries to do everything in one giant turn,
+      its context fills up and it loses the plot, it leaves work
+      half-finished because nothing forces it to check, or it declares
+      success without real evidence that anything passed. Liberta's
+      structure exists specifically to close off each of those.
+    </p>
+    <ul class="feature-list">
+      <li>
+        <h3>One task, one fresh subagent</h3>
+        <p>
+          The controller (<code>skills/liberta</code>) never implements
+          anything itself — it reads a task off a plan, hands it to the
+          right specialist, and reads back a verdict. Context never
+          accumulates past a thin bookkeeping layer.
+        </p>
+      </li>
+      <li>
+        <h3>Independent verification</h3>
+        <p>
+          A task is not "done" until a second, separate agent — one that
+          did not write the change — reproduces the evidence that it works.
+        </p>
+      </li>
+      <li>
+        <h3>Durable state on disk</h3>
+        <p>
+          Plan, progress, budget, and an append-only event log live in a
+          session store outside the target repo, so a run survives a
+          context reset, a machine sleep, or a crash and picks up exactly
+          where it left off.
+        </p>
+      </li>
+      <li>
+        <h3>A hard budget and explicit stop conditions</h3>
+        <p>
+          Every run has a maximum iteration count, token budget, and
+          wall-clock deadline. When any of them trips, or the plan
+          completes, or progress stalls for several iterations in a row,
+          the run stops and notifies rather than grinding on.
+        </p>
+      </li>
+    </ul>
+  </section>
+
+  <section id="how" class="section wrap alt" aria-labelledby="how-heading">
+    <h2 id="how-heading">How it works</h2>
+    <p>
+      A run is driven by a controller skill that reads a plan, dispatches
+      each task to a fresh-context specialist subagent, and waits for an
+      independent verifier to confirm the result before marking anything
+      done. State — the plan, progress, budget, and an append-only event
+      log — is kept on disk in a session store outside the target repo, so
+      the run can pick back up after a crash, a context reset, or the
+      machine going to sleep. Hard budgets on iterations, tokens, and
+      wall-clock time, plus a stall detector, mean the run stops and
+      notifies instead of running forever.
+    </p>
+  </section>
+
+  <section id="layout" class="section wrap" aria-labelledby="layout-heading">
+    <h2 id="layout-heading">Layout</h2>
+    <pre class="code-block"><code>skills/liberta/SKILL.md   the controller — a Claude Code skill, invoked as /liberta "&lt;goal&gt;"
+agents/*.md              the specialist roster (planner, builder, auditor, qa, ...)
+scripts/*.mjs            session-store helpers: event log, message inbox
+scripts/wave-exec.js     runs one wave of a plan's tasks concurrently, in isolated worktrees
+console/                 a small authenticated web UI showing live session status</code></pre>
+  </section>
+
+  <section id="installing" class="section wrap alt" aria-labelledby="installing-heading">
+    <h2 id="installing-heading">Installing</h2>
+    <pre class="code-block"><code>./install.sh</code></pre>
+    <p>
+      Works on macOS and Linux. Installs the controller skill and agent
+      roster into <code>~/.claude/</code> (backing up anything already
+      there before overwriting), prepares the run-store directory, and sets
+      up the console's dependencies.
+    </p>
+    <pre class="code-block"><code>./install.sh --no-console   # harness only, skip the console's npm install
+./install.sh --start        # also start the console immediately, with a
+                             # freshly generated one-off login password</code></pre>
+    <p>
+      Then from any Claude Code session:
+    </p>
+    <pre class="code-block"><code>/liberta "&lt;goal&gt;" --project &lt;path&gt;</code></pre>
+  </section>
+
+  <section id="console" class="section wrap" aria-labelledby="console-heading">
+    <h2 id="console-heading">The console</h2>
+    <p>
+      <code>console/</code> is a small Node/Express app that reads the
+      session store (<code>~/.claude/liberta-runs/</code>) and shows, live,
+      which sessions exist, which one is active, its current task board,
+      and a tail of its event stream — the "which session is working"
+      view. It sits behind a login since the session store can contain
+      repo paths, task descriptions, and other detail you may not want
+      exposed to anyone who finds the URL.
+    </p>
+    <pre class="code-block"><code>cd console
+npm install
+LIBERTA_CONSOLE_PASSWORD='pick something' npm start
+# → http://localhost:4177</code></pre>
+  </section>
+
+  <section id="name" class="section wrap alt name-section" aria-labelledby="name-heading">
+    <h2 id="name-heading">The name</h2>
+    <p>
+      Liberta is named after a friend of mine who has been fighting ADHD all her life. The name is a nod to her persistence.
+    </p>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <p>
+      <a href="https://github.com/qubusp/liberta">View the source on GitHub</a>
+      · MIT licensed
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>
