@@ -88,21 +88,25 @@
                 library and does not change the on-disk harness files. Revert to
                 drop back to the library version.
               </p>
-              <table id="run-skills-table">
+              <table id="run-skills-table" class="selectable-table">
                 <thead>
-                  <tr><th>Name</th><th>Kind</th><th>Status</th><th></th></tr>
+                  <tr><th scope="col">Name</th><th scope="col">Kind</th><th scope="col">Status</th></tr>
                 </thead>
                 <tbody></tbody>
               </table>
               <div id="run-skill-editor" class="skill-editor" hidden>
-                <h4 id="run-skill-editor-title"></h4>
-                <span id="run-skill-editor-badge" class="badge"></span>
+                <div class="skill-editor-head">
+                  <h4 id="run-skill-editor-title"></h4>
+                  <span id="run-skill-editor-badge" class="badge"></span>
+                </div>
+                <label class="field-label" for="run-skill-editor-content">Skill content (markdown)</label>
                 <textarea id="run-skill-editor-content" rows="20"></textarea>
                 <div class="editor-actions">
                   <button type="button" id="run-skill-save">Save override for this run</button>
                   <button type="button" id="run-skill-revert" class="danger">Revert to library version</button>
                   <button type="button" id="run-skill-close" class="subtle">Close</button>
                 </div>
+                <p id="run-skill-note" class="form-feedback" role="status" hidden></p>
               </div>
             </div>
 
@@ -191,24 +195,68 @@
               and <code>agents/</code> files the harness actually executes.
               Editing here never writes back to disk.
             </p>
-            <table id="skills-table">
+            <table id="skills-table" class="selectable-table">
               <thead>
-                <tr><th>Name</th><th>Kind</th><th>Source</th></tr>
+                <tr><th scope="col">Name</th><th scope="col">Kind</th><th scope="col">Source</th></tr>
               </thead>
               <tbody></tbody>
             </table>
 
-            <h3 class="card-subtitle">Import a skill</h3>
-            <form id="import-skill-form">
-              <input type="text" id="import-name" placeholder="name" required />
-              <select id="import-kind">
-                <option value="agent">agent</option>
-                <option value="controller">controller</option>
-              </select>
-              <input type="text" id="import-description" placeholder="description (optional)" />
-              <textarea id="import-content" rows="8" placeholder="skill markdown content" required></textarea>
-              <button type="submit">Import skill</button>
-            </form>
+            <!-- Import lives in its own collapsible panel rather than
+                 permanently occupying the bottom of the list. The body is a
+                 list of import SOURCES: today only "Paste markdown". A
+                 second source (t42: import from a git repository) slots in
+                 as another .import-source block plus a switcher above them,
+                 without restructuring the form itself. -->
+            <details id="import-skill-panel" class="import-panel">
+              <summary class="import-summary">
+                <span class="import-summary-title">Import a skill</span>
+                <span class="import-summary-hint">Add a new skill to the library</span>
+              </summary>
+              <div class="import-panel-body">
+                <div class="import-source" data-import-source="paste">
+                  <h3 class="import-source-title">Paste markdown</h3>
+                  <form id="import-skill-form" class="import-form" novalidate>
+                    <div class="form-row">
+                      <div class="form-field">
+                        <label class="field-label" for="import-name">Name</label>
+                        <input type="text" id="import-name" aria-describedby="import-name-help import-name-error" required />
+                        <p class="field-help" id="import-name-help">Letters, numbers, dot, dash or underscore. Must be unique.</p>
+                        <p class="field-error" id="import-name-error" hidden></p>
+                      </div>
+                      <div class="form-field">
+                        <label class="field-label" for="import-kind">Kind</label>
+                        <select id="import-kind" aria-describedby="import-kind-help">
+                          <option value="agent">agent</option>
+                          <option value="controller">controller</option>
+                        </select>
+                        <p class="field-help" id="import-kind-help">An <strong>agent</strong> skill runs one task; a <strong>controller</strong> skill orchestrates a whole run.</p>
+                      </div>
+                    </div>
+
+                    <div class="form-field">
+                      <label class="field-label" for="import-description">
+                        Description <span class="field-optional">optional</span>
+                      </label>
+                      <input type="text" id="import-description" aria-describedby="import-description-help" />
+                      <p class="field-help" id="import-description-help">One line, shown when you hover the skill in the list above.</p>
+                    </div>
+
+                    <div class="form-field">
+                      <label class="field-label" for="import-content">Skill content</label>
+                      <textarea id="import-content" rows="10" aria-describedby="import-content-help import-content-error" required></textarea>
+                      <p class="field-help" id="import-content-help">Markdown, in the same format as a <code>SKILL.md</code> file.</p>
+                      <p class="field-error" id="import-content-error" hidden></p>
+                    </div>
+
+                    <div class="form-actions">
+                      <button type="submit" class="btn btn-primary">Import skill</button>
+                      <p id="import-feedback" class="form-feedback" role="status" hidden></p>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            </details>
           </section>
 
           <section class="detail-panel card">
@@ -216,14 +264,17 @@
               <h2 id="skill-detail-title" class="card-title">Select a skill</h2>
             </div>
             <div id="skill-detail" hidden>
-              <span id="skill-detail-badge" class="badge"></span>
+              <div class="skill-editor-head">
+                <span id="skill-detail-badge" class="badge"></span>
+              </div>
               <p id="skill-detail-description" class="hint"></p>
+              <label class="field-label" for="skill-detail-content">Skill content (markdown)</label>
               <textarea id="skill-detail-content" rows="24"></textarea>
               <div class="editor-actions">
                 <button type="button" id="skill-save">Save to library</button>
                 <button type="button" id="skill-delete" class="danger">Delete</button>
               </div>
-              <p id="skill-note" class="hint"></p>
+              <p id="skill-note" class="form-feedback" role="status" hidden></p>
             </div>
           </section>
         </div>

@@ -777,11 +777,65 @@ textarea:focus {
   box-shadow: 0 0 0 3px var(--color-primary-light);
 }
 
-#import-skill-form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  margin-top: var(--space-2);
+/* Field scaffolding shared by the import form and the two skill editors.
+   Every control has a real, visible <label for>; nothing here relies on a
+   placeholder to name a field. */
+.field-label {
+  display: block;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: var(--space-1);
+}
+
+/* --text-muted (#8a839c) is only ~3.2:1 on white and would fail AA at this
+   size, so the optional marker uses --text-secondary like the help text. */
+.field-optional {
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-transform: none;
+  font-size: 0.72rem;
+}
+
+.field-help {
+  margin: var(--space-1) 0 0;
+  font-size: 0.74rem;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.field-help code {
+  background: var(--bg-code);
+  border: 1px solid var(--border-color);
+  padding: 0.05rem 0.3rem;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+}
+
+.field-error {
+  margin: var(--space-1) 0 0;
+  font-size: 0.74rem;
+  line-height: 1.45;
+  font-weight: 600;
+  color: var(--status-danger-text);
+}
+
+.field-error[hidden] {
+  display: none;
+}
+
+/* Error state is never colour-only: the field also gains a thicker border
+   and the message sits directly beneath it. */
+input[aria-invalid="true"],
+textarea[aria-invalid="true"] {
+  border-color: var(--status-danger-text);
+  border-width: 2px;
+}
+
+input[aria-invalid="true"]:focus,
+textarea[aria-invalid="true"]:focus {
+  box-shadow: 0 0 0 3px var(--status-danger-bg);
 }
 
 /* =========================================================================
@@ -1531,4 +1585,268 @@ button.logout {
 
 .mindmap-list-detail {
   color: var(--text-secondary);
+}
+
+/* =========================================================================
+   Skills library (t41): selectable rows + the import panel
+
+   Two problems this section fixes.
+   (1) The rows were plain <tr>s with a click handler: no tab stop, no
+       keyboard activation, no selected state. They now carry a real
+       <button class="row-select"> in the name cell, stretched across the
+       cell so the whole name is the target, with hover/focus/selected
+       states and aria-pressed + aria-current doing the announcing.
+   (2) The import form was placeholder-only inputs in a bare stack ending
+       in a full-bleed button. It is now a collapsed <details> panel built
+       from the same card/border/radius/spacing tokens as everything else.
+
+   No new colours: --color-primary / --color-primary-light /
+   --color-primary-text for selection and focus, --bg-surface-alt for
+   hover, --status-* for feedback -- exactly the vocabulary the Runs view
+   and the status pills already use.
+   ========================================================================= */
+
+/* The button provides the padding, so the cell gives up its own. */
+.selectable-table td.row-select-cell {
+  padding: 0;
+}
+
+.row-select {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: 0.55rem 0.6rem;
+  margin: 0;
+  font-family: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-primary-text);
+  cursor: pointer;
+  transition: color var(--transition-fast);
+}
+
+.selectable-table tbody tr:hover .row-select {
+  text-decoration: underline;
+}
+
+.row-select:focus-visible {
+  outline: 2px solid var(--color-primary-text);
+  outline-offset: -2px;
+}
+
+/* Selected row: the primary-light wash the Runs view already uses for a
+   selected session, PLUS a solid left rail, so selection survives
+   greyscale and is not carried by a tint alone. */
+.selectable-table tbody tr.selected-row {
+  background: var(--color-primary-light);
+}
+
+.selectable-table tbody tr.selected-row td:first-child {
+  box-shadow: inset 3px 0 0 var(--color-primary);
+}
+
+.selectable-table tbody tr.selected-row .row-select {
+  color: var(--color-primary-text);
+}
+
+/* ---- Import panel ---------------------------------------------------- */
+.import-panel {
+  margin-top: var(--space-4);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface-alt);
+  overflow: hidden;
+}
+
+.import-summary {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding: var(--space-3) var(--space-4);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+/* Replace the default triangle with a token-coloured chevron that rotates
+   on open, so the control reads as a disclosure in both states. */
+.import-summary::-webkit-details-marker {
+  display: none;
+}
+
+.import-summary::before {
+  content: "";
+  width: 0.5rem;
+  height: 0.5rem;
+  flex: 0 0 auto;
+  border-right: 2px solid var(--color-primary-text);
+  border-bottom: 2px solid var(--color-primary-text);
+  transform: rotate(-45deg);
+  transition: transform var(--transition-fast);
+  margin-right: var(--space-1);
+  position: relative;
+  top: -1px;
+}
+
+.import-panel[open] > .import-summary::before {
+  transform: rotate(45deg);
+}
+
+.import-summary:hover {
+  background: var(--color-primary-light);
+}
+
+.import-summary:focus-visible {
+  outline: 2px solid var(--color-primary-text);
+  outline-offset: -2px;
+}
+
+.import-summary-title {
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-primary);
+}
+
+.import-summary-hint {
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+}
+
+.import-panel-body {
+  padding: var(--space-4);
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-surface);
+}
+
+/* One block per import SOURCE. Today there is exactly one ("Paste
+   markdown"); t42 adds a git source as a sibling .import-source plus a
+   switcher above them, and nothing below this line has to change. */
+.import-source + .import-source {
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-color);
+}
+
+/* h3, so the document heading order runs h2 "Skills library" -> h3
+   "Paste markdown" with no level skipped when t42 adds a second source. */
+h3.import-source-title {
+  margin: 0 0 var(--space-3);
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.import-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* Two fields side by side when there is room for both, one column when
+   there is not. In the 420px library column there is not, so Name and
+   Kind stack; the rule needs no breakpoint to get that right. */
+.form-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.form-field {
+  min-width: 0;
+}
+
+/* The textarea's own default margin fights the flex gap. */
+.form-field textarea {
+  margin: 0;
+}
+
+.form-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+/* Sized to its label, not to the panel: the old button was full-bleed
+   purple across the whole card. */
+.form-actions .btn-primary {
+  flex: 0 0 auto;
+  width: auto;
+  align-self: flex-start;
+}
+
+.form-actions .btn-primary:focus-visible,
+.editor-actions button:focus-visible {
+  outline: 2px solid var(--sidebar-bg);
+  outline-offset: 2px;
+}
+
+/* ---- Inline result feedback (replaces alert()) ----------------------- */
+.form-feedback {
+  margin: 0;
+  padding: 0.4rem 0.7rem;
+  border-radius: var(--radius-md);
+  font-size: 0.76rem;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.form-feedback[hidden] {
+  display: none;
+}
+
+.form-feedback-success {
+  background: var(--status-success-bg);
+  color: var(--status-success-text);
+}
+
+.form-feedback-error {
+  background: var(--status-danger-bg);
+  color: var(--status-danger-text);
+}
+
+/* ---- Skill editor heading row ---------------------------------------- */
+.skill-editor-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-3);
+}
+
+.skill-editor-head h4 {
+  margin: 0;
+}
+
+#skill-detail .form-feedback,
+#run-skill-editor .form-feedback {
+  margin-top: var(--space-3);
+}
+
+/* One column below the point where two side-by-side fields stop fitting
+   in the 420px library column; also what keeps 390px free of horizontal
+   overflow. */
+@media (max-width: 720px) {
+  .import-panel-body {
+    padding: var(--space-3);
+  }
+  .import-summary {
+    padding: var(--space-3);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .row-select,
+  .import-summary::before {
+    transition: none;
+  }
 }
