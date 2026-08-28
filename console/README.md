@@ -192,6 +192,53 @@ files under `skills/`/`agents/` directly. This library is a management
 surface for browsing/editing/experimenting, not a second source of
 truth the harness consults.
 
+## Screenshots / visual evidence
+
+The dashboard and every `/api/*` route are auth-gated (see "Auth" above),
+so a screenshot of `/login` proves nothing about what a logged-in
+operator actually sees. Two scripts under `console/scripts/` exist so
+every visual/UI task can produce real, logged-in evidence the same way:
+
+- **`console/scripts/shot.mjs`** boots the console itself (on port 4999,
+  with fixed test credentials) if nothing is already listening there,
+  tearing it back down on exit if it started it; logs in over HTTP to get
+  the real signed session cookie (reading the cookie name from
+  `console/auth.js` rather than guessing it); then drives the system
+  Google Chrome via `puppeteer-core` (no bundled-browser download) with
+  that cookie set, navigates to a path, and writes full-page PNGs at both
+  1440x900 and 390x844. It hard-fails if the captured page still shows
+  the login form -- a false "success" here would poison every later
+  visual task, so it's checked explicitly rather than assumed.
+
+  ```
+  node console/scripts/shot.mjs \
+    --out ./shots --path / --label dashboard-home \
+    [--reduced-motion] [--script ./my-interaction.mjs]
+  ```
+
+  `--script <file.mjs>` is an ES module exporting `async function
+  run(page)`, executed after login + navigation and before the
+  screenshots -- e.g. to click into a panel or type a message before
+  capturing.
+
+- **`console/scripts/fixture-sessions.mjs`** writes (`create`) and
+  removes (`clean`) four throwaway session-store trees under
+  `~/.claude/liberta-runs/`, shaped like `console/sync.js` expects
+  (`state.json`, `plan.json`, `events.jsonl`, `goal.md`), one each in
+  `running` / `done` / `failed` / `idle` status, and registers/deregisters
+  them in `~/.claude/liberta-runs/index.json` so they show up in the
+  dashboard's session list like real runs -- useful for a single
+  screenshot that shows all four dashboard states at once. Every fixture
+  id is prefixed `zz-fixture-`; `clean` only ever touches directories and
+  index entries with that exact prefix, is idempotent, and never modifies
+  or removes any other session (including the live run these scripts
+  ship in).
+
+  ```
+  node console/scripts/fixture-sessions.mjs create
+  node console/scripts/fixture-sessions.mjs clean
+  ```
+
 ## Deliberately minimal -- not for public exposure
 
 This is built for local, single-operator use: you, on your own machine or
