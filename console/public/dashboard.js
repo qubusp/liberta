@@ -9,9 +9,17 @@
   const eventsLog = document.getElementById("events-log");
   const detailTitle = document.getElementById("detail-title");
 
+  // Last-known status per session id, taken from /api/sessions. The detail
+  // payload does not always carry `status`, and this is only used to drive
+  // the decorative t6 pixel-art treatment on the detail header.
+  const sessionStatusById = new Map();
+
+  function statusSlug(status) {
+    return (status || "unknown").toString().toLowerCase().replace(/[^a-z0-9_]/g, "_");
+  }
+
   function statusClass(status) {
-    const s = (status || "unknown").toString().toLowerCase();
-    return "status-" + s.replace(/[^a-z0-9_]/g, "_");
+    return "status-" + statusSlug(status);
   }
 
   function statusPill(status) {
@@ -38,6 +46,11 @@
     for (const s of data.sessions) {
       const tr = document.createElement("tr");
       tr.dataset.id = s.id;
+      // Drives the pixel-art "working" row treatment in style.css (t6).
+      // A data attribute, not a class, so it cannot collide with the
+      // .status-* pill colour rules.
+      tr.dataset.status = statusSlug(s.status);
+      sessionStatusById.set(s.id, s.status);
 
       const idTd = document.createElement("td");
       idTd.textContent = s.id;
@@ -73,6 +86,11 @@
 
   function renderDetail(data) {
     detailTitle.textContent = data.id;
+    // Same purely-decorative hook for the detail header (t6). The title
+    // text is unchanged, so the heading's accessible name is unaffected.
+    detailTitle.dataset.status = statusSlug(
+      data.status != null ? data.status : sessionStatusById.get(data.id)
+    );
 
     tasksBody.innerHTML = "";
     const tasks = Array.isArray(data.tasks) ? data.tasks : [];
@@ -111,6 +129,9 @@
   }
 
   async function selectSession(id) {
+    if (id !== selectedSessionId) {
+      lastRenderedChatJson = null;
+    }
     selectedSessionId = id;
     await refreshDetail();
   }
@@ -170,6 +191,9 @@
     if (activeDetailTab === "skills") {
       await refreshRunSkills();
     }
+    if (activeDetailTab === "chat") {
+      await refreshChat();
+    }
   }
 
   // -----------------------------------------------------------------
@@ -199,6 +223,7 @@
   let activeDetailTab = "board";
   const boardTabPanel = document.getElementById("detail-board-tab");
   const skillsTabPanel = document.getElementById("detail-skills-tab");
+  const chatTabPanel = document.getElementById("detail-chat-tab");
   document.querySelectorAll(".detail-tab").forEach((btn) => {
     btn.addEventListener("click", () => {
       document.querySelectorAll(".detail-tab").forEach((b) => b.classList.remove("active"));
@@ -206,8 +231,12 @@
       activeDetailTab = btn.dataset.detailTab;
       boardTabPanel.classList.toggle("active", activeDetailTab === "board");
       skillsTabPanel.classList.toggle("active", activeDetailTab === "skills");
+      chatTabPanel.classList.toggle("active", activeDetailTab === "chat");
       if (activeDetailTab === "skills") {
         refreshRunSkills();
+      }
+      if (activeDetailTab === "chat") {
+        refreshChat();
       }
     });
   });
@@ -327,6 +356,158 @@
   document.getElementById("run-skill-close").addEventListener("click", () => {
     runSkillEditor.hidden = true;
     selectedRunSkillName = null;
+  });
+
+  // -----------------------------------------------------------------
+  // Chat: an operator-facing UI over the inbox routes (steer/question/info
+  // messages the controller drains, and its replies to them). Not a
+  // chatbot -- no LLM is called from here.
+  // -----------------------------------------------------------------
+  const chatThread = document.getElementById("chat-thread");
+  const chatForm = document.getElementById("chat-form");
+  const chatText = document.getElementById("chat-text");
+  const chatType = document.getElementById("chat-type");
+  const chatSend = document.getElementById("chat-send");
+  const chatError = document.getElementById("chat-error");
+  let chatMessagesCache = [];
+  let lastRenderedChatJson = null;
+
+  function formatTs(ts) {
+    if (!ts) return "";
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return ts;
+    return d.toLocaleString();
+  }
+
+  // Message direction must never be carried by colour alone (a colour-blind
+  // operator, or a greyscale print of a screenshot, has to parse the
+  // thread too), so every bubble gets a real text label in the DOM -- not
+  // a CSS ::before -- which also means the role=log live region announces
+  // "You" / "Controller reply" along with the message.
+  const CHAT_TYPES = ["steer", "question", "info"];
+
+  function chatBubbleHead(roleLabel, type) {
+    const head = document.createElement("div");
+    head.className = "chat-bubble-head";
+
+    const who = document.createElement("span");
+    who.className = "chat-role";
+    who.textContent = roleLabel;
+    head.appendChild(who);
+
+    if (type !== undefined) {
+      const badge = document.createElement("span");
+      // Only ever interpolate a class from a fixed allowlist; message
+      // .type comes off disk and is not trusted as a class name.
+      const safeType = CHAT_TYPES.indexOf(type) === -1 ? "other" : type;
+      badge.className = "badge chat-type-badge chat-type-" + safeType;
+      badge.textContent = type;
+      head.appendChild(badge);
+    }
+    return head;
+  }
+
+  function renderChat() {
+    chatThread.innerHTML = "";
+    if (chatMessagesCache.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "hint chat-empty";
+      empty.textContent = "No messages yet";
+      chatThread.appendChild(empty);
+      return;
+    }
+    for (const m of chatMessagesCache) {
+      const outWrap = document.createElement("div");
+      outWrap.className = "chat-bubble chat-bubble-out";
+
+      outWrap.appendChild(chatBubbleHead("You", m.type || "steer"));
+
+      const outText = document.createElement("p");
+      outText.className = "chat-text";
+      outText.textContent = m.text;
+      outWrap.appendChild(outText);
+
+      const outMeta = document.createElement("span");
+      outMeta.className = "hint chat-ts";
+      outMeta.textContent = formatTs(m.ts);
+      outWrap.appendChild(outMeta);
+
+      chatThread.appendChild(outWrap);
+
+      if (m.reply) {
+        const inWrap = document.createElement("div");
+        inWrap.className = "chat-bubble chat-bubble-in";
+
+        inWrap.appendChild(chatBubbleHead("Controller reply"));
+
+        const inText = document.createElement("p");
+        inText.className = "chat-text";
+        inText.textContent = m.reply;
+        inWrap.appendChild(inText);
+
+        const inMeta = document.createElement("span");
+        inMeta.className = "hint chat-ts";
+        inMeta.textContent = formatTs(m.replied_ts);
+        inWrap.appendChild(inMeta);
+
+        chatThread.appendChild(inWrap);
+      } else {
+        const pending = document.createElement("p");
+        pending.className = "hint chat-pending";
+        pending.textContent = "Awaiting reply...";
+        chatThread.appendChild(pending);
+      }
+    }
+    chatThread.scrollTop = chatThread.scrollHeight;
+  }
+
+  async function refreshChat() {
+    if (!selectedSessionId) return;
+    try {
+      const data = await fetchJson(
+        "/api/sessions/" + encodeURIComponent(selectedSessionId) + "/inbox"
+      );
+      if (!data) return;
+      const next = JSON.stringify(data.messages || []);
+      if (next === lastRenderedChatJson) return;
+      lastRenderedChatJson = next;
+      chatMessagesCache = data.messages || [];
+      renderChat();
+    } catch (err) {
+      console.error("failed to refresh chat", err);
+    }
+  }
+
+  chatForm.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    if (!selectedSessionId) return;
+    const text = chatText.value.trim();
+    if (!text) return;
+    chatError.hidden = true;
+    chatError.textContent = "";
+    chatSend.disabled = true;
+    try {
+      const res = await fetch(
+        "/api/sessions/" + encodeURIComponent(selectedSessionId) + "/inbox",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({ type: chatType.value, text }),
+        }
+      );
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "send failed: " + res.status);
+      }
+      chatText.value = "";
+      await refreshChat();
+    } catch (err) {
+      chatError.textContent = "Failed to send: " + err.message;
+      chatError.hidden = false;
+    } finally {
+      chatSend.disabled = false;
+    }
   });
 
   // -----------------------------------------------------------------

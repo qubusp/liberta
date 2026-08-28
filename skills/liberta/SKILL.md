@@ -1,7 +1,7 @@
 ---
 name: liberta
 description: Unattended long-running orchestration harness. Give it a goal and a project and it plans, dispatches fresh-context specialist subagents, independently verifies each result, and stops-and-notifies on a clear terminal condition. Pair with /loop for hands-free operation.
-argument-hint: "<goal text> [--project <path>] [--profile dev|research] | --resume <session-id>"
+argument-hint: "<goal text> [--project <path>] [--profile dev|research] | --resume <session-id> | status [<session-id>] [--all]"
 allowed-tools:
   - Task
   - Read
@@ -69,6 +69,21 @@ status change so those two files never drift apart.
 
 ### Step 0 — pick a mode
 
+- Invocation is bare `status`, `--status`, or `/liberta` with no goal text
+  (optionally followed by `<session-id>` and/or `--all`): this is the
+  STATUS path, not a run. Execute
+  `node <repo>/scripts/_status.mjs [<session-id>] [--all]`, print its
+  output verbatim, and STOP. Nothing else in this file runs for this
+  invocation: no SETUP, no LOOP, no `Task()` dispatch, no wave generation,
+  no model call of any kind. `_status.mjs` only reads
+  `~/.claude/liberta-runs/` off disk; it is STRICTLY READ-ONLY and must
+  never be allowed to mutate `plan.json`, `state.json`, `index.json` or
+  `events.jsonl` — in particular, do NOT log a "status viewed" event for
+  this path, and do not use `--status` on `_log-event.mjs` (unrelated flag,
+  different script) to touch state as a side effect of answering. This is
+  the same discipline already applied to inbox `question` messages in the
+  LOOP below: answer from state on disk only, never spawn a subagent just
+  to report a table.
 - `--resume <session-id>` given, or `index.json.active_session_id` points at
   a `running` session: go to LOOP for that session.
 - Otherwise: this is a new goal, go to SETUP.
