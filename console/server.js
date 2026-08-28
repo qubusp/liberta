@@ -374,12 +374,40 @@ function sessionDir(id) {
   return path.join(LIBERTA_RUNS_DIR, id);
 }
 
+// Resolve a path through symlinks, falling back to the (realpath-resolved)
+// nearest existing ancestor joined lexically with the still-missing tail.
+// This lets containment checks see through a symlink planted anywhere on
+// the existing part of the path, while still working for paths that don't
+// exist on disk yet (e.g. a message file about to be written).
+function realpathDeepest(p) {
+  try {
+    return fs.realpathSync(p);
+  } catch (err) {
+    if (err.code !== "ENOENT" && err.code !== "ENOTDIR") throw err;
+    const parent = path.dirname(p);
+    if (parent === p) return p; // reached filesystem root
+    return path.join(realpathDeepest(parent), path.basename(p));
+  }
+}
+
 // Defense in depth on top of the regex allowlist check callers already do:
 // confirm the resolved path is actually still inside LIBERTA_RUNS_DIR before
-// touching the filesystem with it.
+// touching the filesystem with it. Uses realpath (not just lexical resolve)
+// so a symlink planted inside the runs dir can't be used to escape it.
 function isPathInsideRunsDir(p) {
-  const resolved = path.resolve(p);
-  const base = path.resolve(LIBERTA_RUNS_DIR) + path.sep;
+  let resolved;
+  try {
+    resolved = realpathDeepest(path.resolve(p));
+  } catch {
+    return false;
+  }
+  let base;
+  try {
+    base = fs.realpathSync(LIBERTA_RUNS_DIR);
+  } catch {
+    base = path.resolve(LIBERTA_RUNS_DIR);
+  }
+  base = base + path.sep;
   return resolved.startsWith(base);
 }
 
@@ -805,87 +833,115 @@ function inboxArchiveDir(id) {
   return path.join(inboxDir(id), "archive");
 }
 
-function readJsonSafe(filePath) {
+function writeJsonAtomic(filePath, obj) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  // Message files carry operator-authored steer/question text: keep them
+  // readable/writable by the owner only (not group/world), overriding the
+  // process umask.
+  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + "\n", { mode: 0o600 });
+  fs.renameSync(tmp, filePath);
+}
+
+// Per-run cap on pending (unarchived) inbox messages -- keeps an
+// authenticated-but-abusive caller from filling disk one JSON file at a
+// time.
+const MAX_PENDING_MESSAGES = 500;
+// Hard caps on how much listInboxMessages will read+parse in one pass, so a
+// directory with an unexpectedly large number/size of files can't block the
+// single-threaded console for the duration of one request.
+const MAX_LIST_FILES = 2000;
+const MAX_LIST_BYTES = 25 * 1024 * 1024; // 25MB
+
+// Read a JSON file, but only if it's a regular file (not a symlink, fifo,
+// device, etc). Symlinks inside a run's inbox directory could otherwise be
+// used to read arbitrary files elsewhere on disk via this "list the inbox"
+// codepath, since fs.statSync (unlike fs.lstatSync) follows symlinks.
+function readRegularJsonSafe(filePath) {
+  let lst;
+  try {
+    lst = fs.lstatSync(filePath);
+  } catch {
+    return null;
+  }
+  if (!lst.isFile()) return null;
   try {
     const raw = fs.readFileSync(filePath, "utf8");
     if (!raw.trim()) return null;
     return JSON.parse(raw);
-  } catch (err) {
+  } catch {
     return null;
   }
 }
 
-function writeJsonAtomic(filePath, obj) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + "\n");
-  fs.renameSync(tmp, filePath);
+function countPendingMessages(id) {
+  let files = [];
+  try {
+    files = fs.readdirSync(inboxDir(id));
+  } catch (err) {
+    if (err.code !== "ENOENT") throw err;
+    return 0;
+  }
+  let count = 0;
+  for (const f of files) {
+    if (!f.endsWith(".json")) continue;
+    const full = path.join(inboxDir(id), f);
+    let lst;
+    try {
+      lst = fs.lstatSync(full);
+    } catch {
+      continue;
+    }
+    if (lst.isFile()) count += 1;
+  }
+  return count;
 }
 
 function listInboxMessages(id) {
   const dir = inboxDir(id);
   const archive = inboxArchiveDir(id);
   const messages = [];
+  let filesRead = 0;
+  let bytesRead = 0;
 
-  let pendingFiles = [];
-  try {
-    pendingFiles = fs.readdirSync(dir);
-  } catch (err) {
-    if (err.code !== "ENOENT") throw err;
-    pendingFiles = [];
-  }
-  for (const f of pendingFiles) {
-    if (!f.endsWith(".json")) continue;
-    const full = path.join(dir, f);
-    let stat;
+  function collect(base, archived) {
+    if (filesRead >= MAX_LIST_FILES || bytesRead >= MAX_LIST_BYTES) return;
+    let entries = [];
     try {
-      stat = fs.statSync(full);
-    } catch {
-      continue;
+      entries = fs.readdirSync(base);
+    } catch (err) {
+      if (err.code !== "ENOENT") throw err;
+      entries = [];
     }
-    if (!stat.isFile()) continue; // skips the archive/ subdir
-    const msg = readJsonSafe(full);
-    if (!msg) continue;
-    messages.push({
-      filename: f,
-      type: msg.type,
-      text: msg.text,
-      ts: msg.ts,
-      reply: msg.reply || null,
-      replied_ts: msg.replied_ts || null,
-      archived: false,
-    });
+    for (const f of entries) {
+      if (!f.endsWith(".json")) continue;
+      if (filesRead >= MAX_LIST_FILES || bytesRead >= MAX_LIST_BYTES) break;
+      const full = path.join(base, f);
+      let lst;
+      try {
+        lst = fs.lstatSync(full);
+      } catch {
+        continue;
+      }
+      if (!lst.isFile()) continue; // skips the archive/ subdir and any symlinks
+      filesRead += 1;
+      bytesRead += lst.size;
+      const msg = readRegularJsonSafe(full);
+      if (!msg) continue;
+      messages.push({
+        filename: f,
+        type: msg.type,
+        text: msg.text,
+        ts: msg.ts,
+        reply: msg.reply || null,
+        replied_ts: msg.replied_ts || null,
+        archived,
+      });
+    }
   }
 
-  let archivedFiles = [];
-  try {
-    archivedFiles = fs.readdirSync(archive);
-  } catch (err) {
-    if (err.code !== "ENOENT") throw err;
-    archivedFiles = [];
-  }
-  for (const f of archivedFiles) {
-    if (!f.endsWith(".json")) continue;
-    const full = path.join(archive, f);
-    let stat;
-    try {
-      stat = fs.statSync(full);
-    } catch {
-      continue;
-    }
-    if (!stat.isFile()) continue;
-    const msg = readJsonSafe(full);
-    if (!msg) continue;
-    messages.push({
-      filename: f,
-      type: msg.type,
-      text: msg.text,
-      ts: msg.ts,
-      reply: msg.reply || null,
-      replied_ts: msg.replied_ts || null,
-      archived: true,
-    });
-  }
+  collect(dir, false);
+  collect(archive, true);
 
   messages.sort((a, b) => {
     const ta = Date.parse(a.ts || "") || 0;
@@ -905,7 +961,8 @@ app.get("/api/sessions/:id/inbox", async (req, res) => {
     const messages = listInboxMessages(id);
     res.json({ run_id: id, messages });
   } catch (err) {
-    res.status(500).json({ error: "inbox read failed", detail: err.message });
+    console.error(`inbox read failed for session ${id}:`, err);
+    res.status(500).json({ error: "inbox read failed" });
   }
 });
 
@@ -928,6 +985,25 @@ app.post("/api/sessions/:id/inbox", async (req, res) => {
   }
 
   try {
+    // The run must actually exist -- otherwise an authenticated caller
+    // could mint unlimited junk run directories under LIBERTA_RUNS_DIR
+    // just by POSTing to any id that passes the pattern+containment
+    // checks, which also pollutes the dashboard's disk-fallback session
+    // listing. Mirrors the existing-run check in GET /api/sessions/:id.
+    let run = null;
+    try {
+      run = await knex("runs").where({ id }).first();
+    } catch {
+      run = null;
+    }
+    if (!run && !fs.existsSync(sessionDir(id))) {
+      return res.status(404).json({ error: "session not found" });
+    }
+
+    if (countPendingMessages(id) >= MAX_PENDING_MESSAGES) {
+      return res.status(429).json({ error: "inbox is full, wait for pending messages to be processed" });
+    }
+
     const dir = inboxDir(id);
     fs.mkdirSync(dir, { recursive: true });
 
@@ -942,7 +1018,8 @@ app.post("/api/sessions/:id/inbox", async (req, res) => {
 
     res.status(201).json({ ok: true, message: { filename, ...msg } });
   } catch (err) {
-    res.status(500).json({ error: "inbox write failed", detail: err.message });
+    console.error(`inbox write failed for session ${id}:`, err);
+    res.status(500).json({ error: "inbox write failed" });
   }
 });
 
@@ -968,10 +1045,10 @@ app.get("/api/sessions/:id/inbox/:filename", async (req, res) => {
   }
 
   try {
-    let msg = readJsonSafe(pendingPath);
+    let msg = readRegularJsonSafe(pendingPath);
     let archived = false;
     if (!msg) {
-      msg = readJsonSafe(archivedPath);
+      msg = readRegularJsonSafe(archivedPath);
       archived = true;
     }
     if (!msg) {
@@ -987,7 +1064,8 @@ app.get("/api/sessions/:id/inbox/:filename", async (req, res) => {
       archived,
     });
   } catch (err) {
-    res.status(500).json({ error: "inbox read failed", detail: err.message });
+    console.error(`inbox read failed for session ${id}, file ${filename}:`, err);
+    res.status(500).json({ error: "inbox read failed" });
   }
 });
 
