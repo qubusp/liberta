@@ -161,11 +161,19 @@
           <div id="mindmap-canvas" class="mindmap-canvas">
             <svg id="mindmap-edges" class="mindmap-edges" aria-hidden="true" focusable="false">
               <defs>
-                <marker id="mindmap-arrow" viewBox="0 0 10 10" refX="9" refY="5"
-                        markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-                  <path d="M0 0 L10 5 L0 10 z" fill="#8a839c" />
+                <!-- Direction marker for the lineage threads. The gradient on
+                     each edge (bright at the mother, faint at the child) is the
+                     primary direction cue; this small arrowhead makes it
+                     unambiguous. -->
+                <marker id="mindmap-arrow" viewBox="0 0 10 10" refX="8" refY="5"
+                        markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse">
+                  <path d="M0 0 L10 5 L0 10 z" fill="#c9b3f5" />
                 </marker>
               </defs>
+              <!-- Per-edge gradients are rebuilt on every render (see
+                   renderMindmapEdges); kept in their own <defs> so clearing
+                   them cannot remove the arrow marker above. -->
+              <defs id="mindmap-edge-defs"></defs>
             </svg>
             <div id="mindmap-nodes" class="mindmap-nodes"></div>
           </div>

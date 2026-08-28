@@ -699,15 +699,28 @@
   // Re-render UPDATES nodes in place -- a full rebuild each poll would
   // steal keyboard focus from whichever node the operator is on.
   // -----------------------------------------------------------------
-  const NODE_W = 236;
-  const NODE_H = 152;
-  const GAP_X = 28;
-  const GAP_Y = 76;
-  const CANVAS_PAD = 12;
+  // --- Constellation geometry (t12) -------------------------------------
+  // Nodes are STARS: a luminous orb centred on the layout point, with a
+  // caption (id, badges, counts, lineage) hanging underneath it. The
+  // caption box is a fixed width so captions never reflow between polls.
+  const NODE_W = 178; // caption column width
+  const ORB_SLOT = 84; // fixed vertical slot the orb is centred in
+  const CAP_H = 152; // caption height reserved below the orb
+  const ORB_MIN = 30;
+  const ORB_MAX = 74;
+  const MIN_ARC = 216; // minimum arc length per node on a ring
+  const MIN_RING = 252; // minimum radial gap between generations
+  const MAX_TILT = 0.8; // radians: per-constellation rotation, hash-derived
+  const COLLIDE_STEPS = 40; // hard cap on collision nudges per node
+  const COLLIDE_STEP_PX = 22;
+  const MAX_SPAN = 2.4; // radians: cap on a non-root node's angular wedge
+  const CLUSTER_GAP = 96;
+  const CANVAS_PAD = 56;
   const MAX_DEPTH = 64;
 
   const mindmapCanvas = document.getElementById("mindmap-canvas");
   const mindmapEdgesSvg = document.getElementById("mindmap-edges");
+  const mindmapEdgeDefs = document.getElementById("mindmap-edge-defs");
   const mindmapNodesLayer = document.getElementById("mindmap-nodes");
   const mindmapList = document.getElementById("mindmap-list");
   const mindmapEmpty = document.getElementById("mindmap-empty");
@@ -725,6 +738,30 @@
       return nodes.filter((n) => !n.is_fixture);
     }
     return nodes;
+  }
+
+  // Deterministic 32-bit string hash. Used ONLY for stable cosmetic
+  // choices (which way an edge bows, which twinkle phase a star gets).
+  // It must be a pure function of the id so nothing moves on a poll --
+  // Math.random() here would make the whole map jitter every 4 seconds.
+  function mindmapHash(str) {
+    let h = 2166136261;
+    for (let i = 0; i < str.length; i += 1) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
+  }
+
+  // Orb radius from the session's task count, so the map has a visual
+  // hierarchy: a big run is a big star. sqrt so a 100-task run is not
+  // 25x the area of a 4-task one.
+  function mindmapOrbSize(node) {
+    const total = (node.task_counts && Number(node.task_counts.total)) || 0;
+    const scale = Math.min(Math.sqrt(Math.max(total, 0)), 6.5) / 6.5;
+    let size = ORB_MIN + scale * (ORB_MAX - 10 - ORB_MIN);
+    if (node.status === "running" || node.is_active) size += 10;
+    return Math.round(Math.min(size, ORB_MAX));
   }
 
   // Lineage depth. Walks the parent chain with an EXPLICIT visited set
@@ -745,11 +782,11 @@
     return depth;
   }
 
-  // Depth-first order from every root-ish node, so children sit near
-  // their mother. MULTIPLE ROOTS ARE THE NORM. Anything not reachable
-  // from a root (i.e. a member of a cycle) is emitted afterwards, so no
-  // node is ever dropped from the drawing.
-  function mindmapOrder(nodes, byId) {
+  // parent id -> [child ids]. Exactly the edge rule the payload uses: a
+  // self-parent is not a parent link, and an unresolved parent is not a
+  // parent link (that node is drawn as its own root, and its caption
+  // still says the parent is not in the store).
+  function mindmapChildMap(nodes, byId) {
     const children = new Map();
     for (const n of nodes) {
       const p = n.parent_session_id;
@@ -758,6 +795,15 @@
         children.get(p).push(n.id);
       }
     }
+    return children;
+  }
+
+  // Depth-first order from every root-ish node, so children sit near
+  // their mother. MULTIPLE ROOTS ARE THE NORM. Anything not reachable
+  // from a root (i.e. a member of a cycle) is emitted afterwards, so no
+  // node is ever dropped from the drawing.
+  function mindmapOrder(nodes, byId) {
+    const children = mindmapChildMap(nodes, byId);
     const visited = new Set();
     const order = [];
     const walk = (startId) => {
@@ -783,32 +829,203 @@
     return order;
   }
 
+  // Split the forest into constellations: one cluster per root-ish node,
+  // then one per group of nodes only reachable from inside a cycle. The
+  // BFS carries a shared `visited` set, so a self-parent or an a->b->a
+  // cycle terminates instead of looping -- no recursion anywhere.
+  function mindmapClusters(nodes, byId) {
+    const children = mindmapChildMap(nodes, byId);
+    const visited = new Set();
+    const clusters = [];
+    const build = (rootId) => {
+      const members = [];
+      const depthOf = new Map([[rootId, 0]]);
+      const queue = [rootId];
+      visited.add(rootId);
+      while (queue.length > 0) {
+        const id = queue.shift();
+        members.push(id);
+        for (const kid of children.get(id) || []) {
+          if (visited.has(kid)) continue; // cycle guard
+          visited.add(kid);
+          depthOf.set(kid, depthOf.get(id) + 1);
+          queue.push(kid);
+        }
+      }
+      clusters.push({ rootId, members, depthOf, children });
+    };
+    for (const n of nodes) {
+      const p = n.parent_session_id;
+      const rootish = !p || p === n.id || !byId.has(p);
+      if (rootish && !visited.has(n.id)) build(n.id);
+    }
+    // Cycle-only groups: nothing in them is root-ish, so start anywhere.
+    for (const n of nodes) {
+      if (!visited.has(n.id)) build(n.id);
+    }
+    return clusters;
+  }
+
+  // Radial ("star chart") placement of one cluster around its root.
+  // Angular wedge per node is proportional to its subtree size; ring
+  // radius grows with the crowd on that ring so nodes cannot collide.
+  // Fully deterministic: no randomness, so a poll never moves anything.
+  function mindmapPlaceCluster(cluster) {
+    const { rootId, members, depthOf, children } = cluster;
+    const memberSet = new Set(members);
+    const kidsOf = new Map();
+    for (const id of members) {
+      const kids = (children.get(id) || []).filter(
+        (k) => memberSet.has(k) && depthOf.get(k) === depthOf.get(id) + 1
+      );
+      kidsOf.set(id, kids);
+    }
+    // Subtree leaf weight, computed deepest-first (no recursion).
+    const byDepthDesc = members
+      .slice()
+      .sort((a, b) => depthOf.get(b) - depthOf.get(a));
+    const weight = new Map();
+    for (const id of byDepthDesc) {
+      const kids = kidsOf.get(id);
+      weight.set(
+        id,
+        kids.length === 0 ? 1 : kids.reduce((s, k) => s + (weight.get(k) || 1), 0)
+      );
+    }
+    // Ring radii: wide enough that MIN_ARC fits every node on the ring.
+    const countAt = new Map();
+    let maxD = 0;
+    for (const id of members) {
+      const d = depthOf.get(id);
+      countAt.set(d, (countAt.get(d) || 0) + 1);
+      if (d > maxD) maxD = d;
+    }
+    const radii = [0];
+    for (let d = 1; d <= maxD; d += 1) {
+      const need = ((countAt.get(d) || 1) * MIN_ARC) / (2 * Math.PI);
+      radii[d] = Math.max(radii[d - 1] + MIN_RING, need);
+    }
+
+    const pos = new Map([[rootId, { x: 0, y: 0, r: 0, a: 0 }]]);
+    // Each constellation is rotated by a small amount derived from its
+    // root id, so a forest of similar-shaped families does not line up
+    // into rows. Hash-derived, therefore stable across every poll.
+    const tilt = ((mindmapHash(rootId) % 1000) / 1000 - 0.5) * 2 * MAX_TILT;
+    const stack = [
+      { id: rootId, a0: -Math.PI / 2 + tilt, a1: Math.PI * 1.5 + tilt },
+    ];
+    while (stack.length > 0) {
+      const frame = stack.pop();
+      const kids = kidsOf.get(frame.id) || [];
+      if (kids.length === 0) continue;
+      const total = kids.reduce((s, k) => s + (weight.get(k) || 1), 0) || 1;
+      let a = frame.a0;
+      for (const k of kids) {
+        const span = (frame.a1 - frame.a0) * ((weight.get(k) || 1) / total);
+        const mid = a + span / 2;
+        const r = radii[depthOf.get(k)] || MIN_RING;
+        pos.set(k, { x: Math.cos(mid) * r, y: Math.sin(mid) * r, r: r, a: mid });
+        // Clamp a descendant's wedge so a deep branch cannot wrap all the
+        // way round and land on top of its own ancestors.
+        const cs = Math.min(span, MAX_SPAN);
+        stack.push({ id: k, a0: mid - cs / 2, a1: mid + cs / 2 });
+        a += span;
+      }
+    }
+
+    // COLLISION PASS. The rings guarantee enough ARC between siblings, but
+    // a node placed diagonally from its mother can still have its caption
+    // plate clip hers. Walk the stars from the inside out and push any
+    // colliding one further along its own radius (never sideways, so the
+    // lineage geometry is preserved). Bounded and deterministic: at most
+    // COLLIDE_STEPS nudges per node, no randomness, so nothing moves
+    // between polls.
+    const boxOf = (p) => ({
+      x0: p.x - NODE_W / 2 - 6,
+      x1: p.x + NODE_W / 2 + 6,
+      y0: p.y - ORB_SLOT / 2,
+      y1: p.y - ORB_SLOT / 2 + ORB_SLOT + CAP_H,
+    });
+    const hits = (a, b) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
+    const settled = [];
+    const byRadius = members
+      .slice()
+      .sort((a, b) => (pos.get(a).r || 0) - (pos.get(b).r || 0));
+    for (const id of byRadius) {
+      const p = pos.get(id);
+      if (!p) continue;
+      for (let step = 0; step < COLLIDE_STEPS; step += 1) {
+        const box = boxOf(p);
+        if (!settled.some((q) => hits(box, boxOf(q)))) break;
+        if (p.r === 0) {
+          // The cluster root has no radius to grow along; nudge it up
+          // instead so it still crowns its own constellation.
+          p.y -= COLLIDE_STEP_PX;
+        } else {
+          p.r += COLLIDE_STEP_PX;
+          p.x = Math.cos(p.a) * p.r;
+          p.y = Math.sin(p.a) * p.r;
+        }
+      }
+      settled.push(p);
+    }
+    return pos;
+  }
+
   function mindmapLayout(nodes) {
     const byId = new Map(nodes.map((n) => [n.id, n]));
     const order = mindmapOrder(nodes, byId);
-    const colByDepth = new Map();
+    const clusters = mindmapClusters(nodes, byId);
+
     const positions = new Map();
-    let maxCol = 0;
-    let maxDepth = 0;
-    for (const node of order) {
-      const depth = mindmapDepth(node, byId);
-      const col = colByDepth.get(depth) || 0;
-      colByDepth.set(depth, col + 1);
-      if (col > maxCol) maxCol = col;
-      if (depth > maxDepth) maxDepth = depth;
-      positions.set(node.id, {
-        depth,
-        x: CANVAS_PAD + col * (NODE_W + GAP_X),
-        y: CANVAS_PAD + depth * (NODE_H + GAP_Y),
+    // Pack constellations left to right, staggered vertically so the row
+    // of clusters does not read as a line of boxes.
+    let cursorX = 0;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    clusters.forEach((cluster, ci) => {
+      const local = mindmapPlaceCluster(cluster);
+      let lMinX = Infinity;
+      let lMaxX = -Infinity;
+      local.forEach((p) => {
+        if (p.x < lMinX) lMinX = p.x;
+        if (p.x > lMaxX) lMaxX = p.x;
       });
+      const stagger = (ci % 3) * 58 - 58;
+      const shiftX = cursorX - lMinX + NODE_W / 2;
+      local.forEach((p, id) => {
+        const node = byId.get(id);
+        const y = p.y + stagger;
+        positions.set(id, {
+          cx: p.x + shiftX + CANVAS_PAD,
+          cy: y,
+          depth: cluster.depthOf.get(id) || 0,
+          orb: node ? mindmapOrbSize(node) : ORB_MIN,
+        });
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      });
+      cursorX += lMaxX - lMinX + NODE_W + CLUSTER_GAP;
+    });
+
+    if (!Number.isFinite(minY)) {
+      minY = 0;
+      maxY = 0;
     }
-    return {
-      order,
-      byId,
-      positions,
-      width: CANVAS_PAD * 2 + (maxCol + 1) * NODE_W + maxCol * GAP_X,
-      height: CANVAS_PAD * 2 + (maxDepth + 1) * NODE_H + maxDepth * GAP_Y,
-    };
+    // Shift so every star (and its caption) sits inside the canvas.
+    const offsetY = CANVAS_PAD + ORB_SLOT / 2 - minY;
+    positions.forEach((p) => {
+      p.cy += offsetY;
+      p.x = p.cx - NODE_W / 2; // button box top-left
+      p.y = p.cy - ORB_SLOT / 2;
+    });
+
+    const width = Math.max(
+      CANVAS_PAD * 2 + Math.max(cursorX - CLUSTER_GAP, NODE_W),
+      NODE_W + CANVAS_PAD * 2
+    );
+    const height = CANVAS_PAD * 2 + (maxY - minY) + ORB_SLOT + CAP_H;
+    return { order, byId, positions, clusters, width, height };
   }
 
   function mindmapLineageText(node, byId) {
@@ -859,25 +1076,40 @@
     el.className = "mindmap-node";
     el.dataset.sessionId = id;
 
+    // The star itself. Purely decorative -- every fact it encodes (status,
+    // running, degraded) is also written in the caption below it, so the
+    // map never depends on colour or glow alone.
+    const orb = document.createElement("span");
+    orb.className = "mindmap-orb";
+    orb.setAttribute("aria-hidden", "true");
+    const orbCore = document.createElement("span");
+    orbCore.className = "mindmap-orb-core";
+    orb.appendChild(orbCore);
+    el.appendChild(orb);
+
+    const caption = document.createElement("span");
+    caption.className = "mindmap-caption";
+    el.appendChild(caption);
+
     const head = document.createElement("span");
     head.className = "mindmap-node-id";
-    el.appendChild(head);
+    caption.appendChild(head);
 
     const badges = document.createElement("span");
     badges.className = "mindmap-node-badges";
-    el.appendChild(badges);
+    caption.appendChild(badges);
 
     const meta = document.createElement("span");
     meta.className = "mindmap-node-meta";
-    el.appendChild(meta);
+    caption.appendChild(meta);
 
     const tasks = document.createElement("span");
     tasks.className = "mindmap-node-tasks";
-    el.appendChild(tasks);
+    caption.appendChild(tasks);
 
     const lineage = document.createElement("span");
     lineage.className = "mindmap-node-lineage";
-    el.appendChild(lineage);
+    caption.appendChild(lineage);
 
     // Reuses the dashboard's own selection path; a native <button> gives
     // Enter/Space and tab order for free.
@@ -886,7 +1118,7 @@
       mindmapMarkSelected();
     });
 
-    const entry = { el, head, badges, meta, tasks, lineage };
+    const entry = { el, orb, head, badges, meta, tasks, lineage };
     mindmapNodeEls.set(id, entry);
     mindmapNodesLayer.appendChild(el);
     return entry;
@@ -927,9 +1159,25 @@
     entry.lineage.textContent = mindmapLineageText(node, byId);
     entry.el.classList.toggle("mindmap-node-fixture", !!node.is_fixture);
     entry.el.classList.toggle("mindmap-node-degraded", !!node.degraded);
+    entry.el.classList.toggle(
+      "mindmap-node-live",
+      !node.degraded && (node.status === "running" || !!node.is_active)
+    );
     entry.el.dataset.status = statusSlug(node.status);
+    // Twinkle phase is a pure function of the id, so it is stable across
+    // polls (and is switched off entirely under reduced motion).
+    entry.el.style.setProperty(
+      "--star-delay",
+      ((mindmapHash(node.id) % 40) / 10).toFixed(1) + "s"
+    );
   }
 
+  // Edges as curved threads of light. Each edge is a quadratic bezier
+  // bowed to one side (deterministically, by a hash of its endpoints) and
+  // painted with its OWN gradient running bright-at-the-mother to
+  // faint-at-the-child, so direction stays readable without relying on
+  // the arrowhead alone. The whole layer is aria-hidden; the lineage list
+  // below carries the same information as words.
   function renderMindmapEdges(layout, visibleIds) {
     const edges = Array.isArray(mindmapGraph.edges) ? mindmapGraph.edges : [];
     // Edges carry no focus and no text, so rebuilding them each tick is
@@ -937,21 +1185,64 @@
     mindmapEdgesSvg
       .querySelectorAll(".mindmap-edge")
       .forEach((line) => line.remove());
+    if (mindmapEdgeDefs) mindmapEdgeDefs.textContent = "";
+    const SVG_NS = "http://www.w3.org/2000/svg";
+    let i = 0;
     for (const edge of edges) {
       if (!edge || !visibleIds.has(edge.from) || !visibleIds.has(edge.to)) continue;
       const from = layout.positions.get(edge.from);
       const to = layout.positions.get(edge.to);
       if (!from || !to) continue;
-      const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-      line.setAttribute("class", "mindmap-edge");
-      line.setAttribute("x1", String(from.x + NODE_W / 2));
-      line.setAttribute("y1", String(from.y + NODE_H));
-      line.setAttribute("x2", String(to.x + NODE_W / 2));
-      line.setAttribute("y2", String(to.y - 6));
-      line.setAttribute("marker-end", "url(#mindmap-arrow)");
-      line.dataset.from = edge.from;
-      line.dataset.to = edge.to;
-      mindmapEdgesSvg.appendChild(line);
+      i += 1;
+
+      const dx = to.cx - from.cx;
+      const dy = to.cy - from.cy;
+      const dist = Math.hypot(dx, dy) || 1;
+      const ux = dx / dist;
+      const uy = dy / dist;
+      // Start/end on the rim of each orb, not at its centre.
+      const x1 = from.cx + ux * (from.orb / 2 + 2);
+      const y1 = from.cy + uy * (from.orb / 2 + 2);
+      const x2 = to.cx - ux * (to.orb / 2 + 7);
+      const y2 = to.cy - uy * (to.orb / 2 + 7);
+      const bow = mindmapHash(edge.from + ">" + edge.to) % 2 === 0 ? 1 : -1;
+      const bend = Math.min(dist * 0.16, 64) * bow;
+      const mx = (x1 + x2) / 2 - uy * bend;
+      const my = (y1 + y2) / 2 + ux * bend;
+
+      const gradId = "mindmap-edge-grad-" + i;
+      if (mindmapEdgeDefs) {
+        const grad = document.createElementNS(SVG_NS, "linearGradient");
+        grad.setAttribute("id", gradId);
+        grad.setAttribute("gradientUnits", "userSpaceOnUse");
+        grad.setAttribute("x1", String(x1));
+        grad.setAttribute("y1", String(y1));
+        grad.setAttribute("x2", String(x2));
+        grad.setAttribute("y2", String(y2));
+        const s0 = document.createElementNS(SVG_NS, "stop");
+        s0.setAttribute("offset", "0");
+        s0.setAttribute("stop-color", "#e6dbff");
+        s0.setAttribute("stop-opacity", "0.95");
+        const s1 = document.createElementNS(SVG_NS, "stop");
+        s1.setAttribute("offset", "1");
+        s1.setAttribute("stop-color", "#8a6fd6");
+        s1.setAttribute("stop-opacity", "0.38");
+        grad.appendChild(s0);
+        grad.appendChild(s1);
+        mindmapEdgeDefs.appendChild(grad);
+      }
+
+      const path = document.createElementNS(SVG_NS, "path");
+      path.setAttribute("class", "mindmap-edge");
+      path.setAttribute(
+        "d",
+        "M " + x1 + " " + y1 + " Q " + mx + " " + my + " " + x2 + " " + y2
+      );
+      path.setAttribute("stroke", "url(#" + gradId + ")");
+      path.setAttribute("marker-end", "url(#mindmap-arrow)");
+      path.dataset.from = edge.from;
+      path.dataset.to = edge.to;
+      mindmapEdgesSvg.appendChild(path);
     }
   }
 
@@ -1011,6 +1302,7 @@
       const pos = layout.positions.get(node.id);
       entry.el.style.left = pos.x + "px";
       entry.el.style.top = pos.y + "px";
+      entry.el.style.setProperty("--orb-size", pos.orb + "px");
       updateMindmapNode(entry, node, layout.byId);
     }
 
