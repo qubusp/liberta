@@ -134,6 +134,76 @@ app.use(async (req, res, next) => {
 });
 
 // ---------------------------------------------------------------------
+// CSRF defence for state-changing /api/ requests.
+//
+// Auth here is a cookie with no CSRF token, and express.urlencoded is
+// mounted globally, so a cross-origin `<form method=POST>` would be a
+// "simple request" (no preflight) that the browser sends WITH the session
+// cookie. For the inbox that means any page the operator visits while
+// logged in could drop a `steer` message into a live run, which the
+// controller then acts on as operator-authored direction.
+//
+// Two independent checks, both cheap:
+//   1. Reject anything a browser tells us is cross-site (Sec-Fetch-Site,
+//      or an Origin whose host isn't ours). Neither header is forgeable
+//      from page JS.
+//   2. Require Content-Type: application/json on requests that carry a
+//      body. HTML forms can only send urlencoded / multipart / text-plain,
+//      so this alone blocks the no-preflight form attack; a JSON body from
+//      another origin requires a preflight, which same-origin policy fails.
+// GET/HEAD/OPTIONS are untouched, and DELETE (which the dashboard sends
+// without a body) only gets the origin check.
+// ---------------------------------------------------------------------
+const CSRF_SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+const CSRF_BODY_METHODS = new Set(["POST", "PUT", "PATCH"]);
+
+function requestHost(req) {
+  const h = req.headers && req.headers.host;
+  return typeof h === "string" ? h.toLowerCase() : null;
+}
+
+function isCrossSiteRequest(req) {
+  const fetchSite = req.headers && req.headers["sec-fetch-site"];
+  if (typeof fetchSite === "string" && fetchSite) {
+    // "same-origin" / "same-site" / "none" (direct navigation, no
+    // initiator) are fine; "cross-site" is not.
+    if (fetchSite.toLowerCase() === "cross-site") return true;
+  }
+  const origin = req.headers && req.headers.origin;
+  if (typeof origin === "string" && origin && origin !== "null") {
+    let originHost;
+    try {
+      originHost = new URL(origin).host.toLowerCase();
+    } catch {
+      return true; // unparsable Origin -- treat as hostile
+    }
+    const host = requestHost(req);
+    if (!host || originHost !== host) return true;
+  }
+  return false;
+}
+
+app.use((req, res, next) => {
+  if (!req.path.startsWith("/api/")) return next();
+  if (CSRF_SAFE_METHODS.has(req.method)) return next();
+
+  if (isCrossSiteRequest(req)) {
+    return res.status(403).json({ error: "cross-origin request rejected" });
+  }
+
+  if (CSRF_BODY_METHODS.has(req.method)) {
+    const ctype = req.headers["content-type"];
+    const base = typeof ctype === "string" ? ctype.split(";")[0].trim().toLowerCase() : "";
+    if (base !== "application/json") {
+      return res
+        .status(415)
+        .json({ error: "content-type must be application/json" });
+    }
+  }
+  return next();
+});
+
+// ---------------------------------------------------------------------
 // Login / logout
 // ---------------------------------------------------------------------
 const OAUTH_ERROR_MESSAGES = {
@@ -447,6 +517,10 @@ app.get("/api/sessions", async (req, res) => {
       id: r.id,
       project_path: r.project_path,
       status: r.status,
+      // Lineage is written by sync.js (runs.parent_session_id) but was
+      // exposed nowhere, making it write-only. `null` means "root" -- the
+      // key is always present so consumers never see `undefined`.
+      parent_session_id: r.parent_session_id ?? null,
       is_active: !!r.active,
     }));
     res.json({
@@ -529,7 +603,10 @@ app.get("/api/sessions/:id", async (req, res) => {
     res.json({
       id,
       goal_exists: goalExists,
-      state: run.status ? { status: run.status } : null,
+      state: normalizeSessionState({
+        status: run.status,
+        parent_session_id: run.parent_session_id,
+      }),
       tasks,
       events,
     });
@@ -537,6 +614,21 @@ app.get("/api/sessions/:id", async (req, res) => {
     res.status(500).json({ error: "db read failed", detail: err.message });
   }
 });
+
+// The DB branch and the disk-fallback branch of GET /api/sessions/:id must
+// agree on the shape of `state` -- otherwise a lineage edge visible before
+// the first sync pass silently disappears (or turns from null into
+// undefined) seconds later, once the run lands in the DB. Both branches go
+// through here: `status` and `parent_session_id` are always present, and
+// "no parent" is always the documented `null`, never `undefined`.
+function normalizeSessionState(state) {
+  const src = state && typeof state === "object" && !Array.isArray(state) ? state : {};
+  return {
+    ...src,
+    status: src.status ?? null,
+    parent_session_id: src.parent_session_id ?? null,
+  };
+}
 
 function safeJsonParse(str, fallback) {
   if (str === null || str === undefined) return fallback;
@@ -567,7 +659,7 @@ async function readSessionFromDisk(id, dir) {
   return {
     id,
     goal_exists: goalExists,
-    state: state || null,
+    state: normalizeSessionState(state),
     tasks: plan && Array.isArray(plan.tasks) ? plan.tasks : plan || [],
     events,
   };
@@ -852,6 +944,14 @@ const MAX_PENDING_MESSAGES = 500;
 // single-threaded console for the duration of one request.
 const MAX_LIST_FILES = 2000;
 const MAX_LIST_BYTES = 25 * 1024 * 1024; // 25MB
+// Per-FILE cap, checked against lstat().size BEFORE any read. The whole-pass
+// MAX_LIST_BYTES budget above can only stop the *next* file, so on its own it
+// does nothing about a single huge one: the API caps a message body at 8000
+// chars, but scripts/_mailbox.mjs (and any other local process) writes into
+// these directories uncapped, and archive/ grows without limit. Reading one
+// such file with the synchronous readFileSync below would stall -- or OOM --
+// the single-threaded console for the length of the read.
+const MAX_MESSAGE_BYTES = 256 * 1024; // 256KB
 
 // Read a JSON file, but only if it's a regular file (not a symlink, fifo,
 // device, etc). Symlinks inside a run's inbox directory could otherwise be
@@ -865,6 +965,9 @@ function readRegularJsonSafe(filePath) {
     return null;
   }
   if (!lst.isFile()) return null;
+  // Refuse to buffer something far too large to be a message (see
+  // MAX_MESSAGE_BYTES) -- checked before the blocking read, not after.
+  if (lst.size > MAX_MESSAGE_BYTES) return null;
   try {
     const raw = fs.readFileSync(filePath, "utf8");
     if (!raw.trim()) return null;
@@ -874,14 +977,30 @@ function readRegularJsonSafe(filePath) {
   }
 }
 
-function countPendingMessages(id) {
-  let files = [];
-  try {
-    files = fs.readdirSync(inboxDir(id));
-  } catch (err) {
-    if (err.code !== "ENOENT") throw err;
-    return 0;
+// readdirSync throws ENOTDIR (not ENOENT) when the path exists but is a
+// regular file -- e.g. someone dropped a file literally named `inbox` into a
+// run directory. Callers want the same "nothing to list" behaviour they get
+// for a missing directory for the *absent* case, but a clean, explicit error
+// for the not-a-directory case rather than an unhandled 500.
+class InboxNotADirectoryError extends Error {
+  constructor() {
+    super("inbox path exists but is not a directory");
+    this.code = "INBOX_NOT_A_DIRECTORY";
   }
+}
+
+function readdirInboxSafe(dirPath) {
+  try {
+    return fs.readdirSync(dirPath);
+  } catch (err) {
+    if (err.code === "ENOENT") return [];
+    if (err.code === "ENOTDIR") throw new InboxNotADirectoryError();
+    throw err;
+  }
+}
+
+function countPendingMessages(id) {
+  const files = readdirInboxSafe(inboxDir(id));
   let count = 0;
   for (const f of files) {
     if (!f.endsWith(".json")) continue;
@@ -897,6 +1016,34 @@ function countPendingMessages(id) {
   return count;
 }
 
+// A message file is only JSON-parseable, not trustworthy: `[1,2,3]`,
+// `"just a string"` and `null` all parse fine, and reading .type/.text/.ts
+// off them yielded `undefined`, which JSON.stringify then DROPS -- so the
+// response contained entries missing the very keys every consumer indexes.
+// Reject anything that isn't an object carrying a usable message shape, and
+// always emit the full key set for the ones we keep.
+function normalizeInboxMessage(filename, msg, archived) {
+  if (!msg || typeof msg !== "object" || Array.isArray(msg)) return null;
+  if (typeof msg.type !== "string" || msg.type.length === 0) return null;
+  if (typeof msg.text !== "string" || msg.text.length === 0) return null;
+  const ts = typeof msg.ts === "string" && Number.isFinite(Date.parse(msg.ts)) ? msg.ts : null;
+  return {
+    filename,
+    type: msg.type,
+    text: msg.text,
+    ts,
+    reply: typeof msg.reply === "string" ? msg.reply : null,
+    replied_ts: typeof msg.replied_ts === "string" ? msg.replied_ts : null,
+    archived,
+  };
+}
+
+// Undated entries sort last (Infinity), never above a dated one.
+function messageSortKey(m) {
+  const t = Date.parse(m.ts || "");
+  return Number.isFinite(t) ? t : Infinity;
+}
+
 function listInboxMessages(id) {
   const dir = inboxDir(id);
   const archive = inboxArchiveDir(id);
@@ -906,13 +1053,7 @@ function listInboxMessages(id) {
 
   function collect(base, archived) {
     if (filesRead >= MAX_LIST_FILES || bytesRead >= MAX_LIST_BYTES) return;
-    let entries = [];
-    try {
-      entries = fs.readdirSync(base);
-    } catch (err) {
-      if (err.code !== "ENOENT") throw err;
-      entries = [];
-    }
+    const entries = readdirInboxSafe(base);
     for (const f of entries) {
       if (!f.endsWith(".json")) continue;
       if (filesRead >= MAX_LIST_FILES || bytesRead >= MAX_LIST_BYTES) break;
@@ -924,32 +1065,57 @@ function listInboxMessages(id) {
         continue;
       }
       if (!lst.isFile()) continue; // skips the archive/ subdir and any symlinks
+      // Size check BEFORE the read: never call readFileSync on a file we
+      // already know is too big to be a message (see MAX_MESSAGE_BYTES).
+      if (lst.size > MAX_MESSAGE_BYTES) continue;
       filesRead += 1;
       bytesRead += lst.size;
       const msg = readRegularJsonSafe(full);
-      if (!msg) continue;
-      messages.push({
-        filename: f,
-        type: msg.type,
-        text: msg.text,
-        ts: msg.ts,
-        reply: msg.reply || null,
-        replied_ts: msg.replied_ts || null,
-        archived,
-      });
+      const normalized = normalizeInboxMessage(f, msg, archived);
+      if (!normalized) continue;
+      messages.push(normalized);
     }
   }
 
   collect(dir, false);
   collect(archive, true);
 
+  // Oldest first. An entry whose ts is missing/unparsable has no position
+  // on the timeline, so it sorts AFTER every dated entry (previously
+  // `Date.parse(undefined) || 0` sent it to the very top, so a chat UI
+  // rendered junk as the oldest messages); ties fall back to filename,
+  // which is itself timestamp-prefixed, for a stable order.
   messages.sort((a, b) => {
-    const ta = Date.parse(a.ts || "") || 0;
-    const tb = Date.parse(b.ts || "") || 0;
-    return ta - tb;
+    const ta = messageSortKey(a);
+    const tb = messageSortKey(b);
+    if (ta !== tb) return ta - tb;
+    return a.filename < b.filename ? -1 : a.filename > b.filename ? 1 : 0;
   });
 
   return messages;
+}
+
+// Shared by the inbox GET and POST: a run has to actually exist. On GET
+// this is the difference between "this run has no messages" and "this run
+// does not exist" (it used to answer 200 {"messages":[]} for any
+// well-formed id); on POST it also stops an authenticated caller minting
+// junk run directories under LIBERTA_RUNS_DIR.
+async function sessionExists(id) {
+  try {
+    const run = await knex("runs").where({ id }).first();
+    if (run) return true;
+  } catch {
+    // DB unavailable -- fall through to the filesystem check.
+  }
+  return fs.existsSync(sessionDir(id));
+}
+
+function sendInboxError(res, err, context) {
+  if (err instanceof InboxNotADirectoryError) {
+    return res.status(409).json({ error: "inbox path is not a directory" });
+  }
+  console.error(context, err);
+  return res.status(500).json({ error: "inbox read failed" });
 }
 
 app.get("/api/sessions/:id/inbox", async (req, res) => {
@@ -958,11 +1124,13 @@ app.get("/api/sessions/:id/inbox", async (req, res) => {
     return res.status(400).json({ error: "invalid session id" });
   }
   try {
+    if (!(await sessionExists(id))) {
+      return res.status(404).json({ error: "session not found" });
+    }
     const messages = listInboxMessages(id);
     res.json({ run_id: id, messages });
   } catch (err) {
-    console.error(`inbox read failed for session ${id}:`, err);
-    res.status(500).json({ error: "inbox read failed" });
+    return sendInboxError(res, err, `inbox read failed for session ${id}:`);
   }
 });
 
@@ -990,13 +1158,7 @@ app.post("/api/sessions/:id/inbox", async (req, res) => {
     // just by POSTing to any id that passes the pattern+containment
     // checks, which also pollutes the dashboard's disk-fallback session
     // listing. Mirrors the existing-run check in GET /api/sessions/:id.
-    let run = null;
-    try {
-      run = await knex("runs").where({ id }).first();
-    } catch {
-      run = null;
-    }
-    if (!run && !fs.existsSync(sessionDir(id))) {
+    if (!(await sessionExists(id))) {
       return res.status(404).json({ error: "session not found" });
     }
 
@@ -1005,6 +1167,17 @@ app.post("/api/sessions/:id/inbox", async (req, res) => {
     }
 
     const dir = inboxDir(id);
+    // mkdirSync would throw EEXIST/ENOTDIR if `inbox` exists as a regular
+    // file; report that as a clean error instead of an unhandled 500.
+    let inboxLst = null;
+    try {
+      inboxLst = fs.lstatSync(dir);
+    } catch {
+      inboxLst = null;
+    }
+    if (inboxLst && !inboxLst.isDirectory()) {
+      throw new InboxNotADirectoryError();
+    }
     fs.mkdirSync(dir, { recursive: true });
 
     const ts = new Date().toISOString();
@@ -1018,6 +1191,9 @@ app.post("/api/sessions/:id/inbox", async (req, res) => {
 
     res.status(201).json({ ok: true, message: { filename, ...msg } });
   } catch (err) {
+    if (err instanceof InboxNotADirectoryError) {
+      return res.status(409).json({ error: "inbox path is not a directory" });
+    }
     console.error(`inbox write failed for session ${id}:`, err);
     res.status(500).json({ error: "inbox write failed" });
   }
@@ -1054,18 +1230,15 @@ app.get("/api/sessions/:id/inbox/:filename", async (req, res) => {
     if (!msg) {
       return res.status(404).json({ error: "message not found" });
     }
-    res.json({
-      filename,
-      type: msg.type,
-      text: msg.text,
-      ts: msg.ts,
-      reply: msg.reply || null,
-      replied_ts: msg.replied_ts || null,
-      archived,
-    });
+    const normalized = normalizeInboxMessage(filename, msg, archived);
+    if (!normalized) {
+      // Parsed, but not a message (see normalizeInboxMessage) -- say so
+      // rather than emitting an object with keys silently missing.
+      return res.status(422).json({ error: "message file is malformed" });
+    }
+    res.json(normalized);
   } catch (err) {
-    console.error(`inbox read failed for session ${id}, file ${filename}:`, err);
-    res.status(500).json({ error: "inbox read failed" });
+    return sendInboxError(res, err, `inbox read failed for session ${id}, file ${filename}:`);
   }
 });
 
@@ -1076,6 +1249,38 @@ app.use(express.static(path.join(__dirname, "public"), { index: false }));
 
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "dashboard.html"));
+});
+
+// ---------------------------------------------------------------------
+// Error handler -- LAST, so it catches errors from every layer above,
+// including body-parser (which runs before auth, so its errors were
+// reaching unauthenticated callers). Express's default handler renders an
+// HTML stack trace containing absolute filesystem paths and node_modules
+// internals; every client of this app speaks JSON, so answer with a small
+// JSON object carrying no stack frame and no path.
+// ---------------------------------------------------------------------
+app.use((err, req, res, next) => {
+  if (res.headersSent) {
+    return next(err);
+  }
+  const status = Number(err && (err.status || err.statusCode)) || 500;
+  let message;
+  if (err && err.type === "entity.too.large") {
+    message = "request body too large";
+  } else if (err && (err.type === "entity.parse.failed" || err instanceof SyntaxError)) {
+    message = "malformed JSON body";
+  } else if (err && err.type === "encoding.unsupported") {
+    message = "unsupported content encoding";
+  } else if (status >= 400 && status < 500) {
+    message = "bad request";
+  } else {
+    message = "internal server error";
+  }
+  // Detail (with the stack) goes to the server log only, never the wire.
+  if (status >= 500) {
+    console.error("unhandled error:", (err && (err.stack || err.message)) || err);
+  }
+  res.status(status).json({ error: message });
 });
 
 // ---------------------------------------------------------------------
