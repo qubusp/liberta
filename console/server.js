@@ -21,6 +21,7 @@ const {
 } = require("./auth");
 const { tailLines } = require("./tail");
 const { knex, ensureSchema, seedSkillsFromDisk } = require("./db");
+const { buildSessionGraph } = require("./session-graph");
 const { startSyncLoop } = require("./sync");
 const oauth = require("./auth-oauth");
 
@@ -536,6 +537,70 @@ app.get("/api/sessions", async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: "db read failed", detail: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------
+// GET /api/sessions/graph -- the graph the mindmap UI (t11/t12) renders.
+//
+// ROUTE-ORDER TRAP: Express matches routes in registration order, and
+// `/api/sessions/:id` below would otherwise swallow the literal segment
+// "graph" as if it were a session id (returning a 404 "session not
+// found" rather than the graph, or worse, matching a real session
+// literally named "graph"). This route is therefore registered ABOVE
+// `/api/sessions/:id` so it always wins for this exact path.
+//
+// Session list comes from the same source /api/sessions uses (the
+// `runs` table, kept in sync with parent_session_id by sync.js/t9).
+// Per-session plan.json and the tail of events.jsonl are read directly
+// from disk here (mirroring readSessionFromDisk's approach below) and
+// handed to buildSessionGraph as plain data -- this route does no graph
+// logic of its own, it only gathers input for the pure builder.
+//
+// Read-only: this route never writes anything under LIBERTA_RUNS_DIR.
+app.get("/api/sessions/graph", async (req, res) => {
+  try {
+    const runs = await knex("runs").select("*");
+    const sessions = runs.map((r) => ({
+      id: r.id,
+      project_path: r.project_path,
+      status: r.status,
+      parent_session_id: r.parent_session_id ?? null,
+      is_active: !!r.active,
+    }));
+
+    const plans = {};
+    const events = {};
+    for (const session of sessions) {
+      const id = session.id;
+      // Defense in depth, same as every other per-id path below: the
+      // regex allowlist alone does not stop `..`, so pair it with the
+      // resolved-path containment check. An index/DB entry that fails
+      // either is skipped (never 500s) rather than failing the whole
+      // response for every other, well-formed session.
+      if (!SESSION_ID_PATTERN.test(id)) continue;
+      const dir = sessionDir(id);
+      if (!isPathInsideRunsDir(dir)) continue;
+
+      // A malformed plan.json/events.jsonl for one session degrades that
+      // node only -- readJsonSafe/tailLines already swallow parse errors
+      // and return null/[] rather than throwing.
+      plans[id] = readJsonSafe(path.join(dir, "plan.json"));
+
+      const rawLines = tailLines(path.join(dir, "events.jsonl"), 50);
+      events[id] = rawLines.map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch (err) {
+          return { raw: line };
+        }
+      });
+    }
+
+    const graph = buildSessionGraph({ sessions, plans, events });
+    res.json({ nodes: graph.nodes, edges: graph.edges, generated_at: new Date().toISOString() });
+  } catch (err) {
+    res.status(500).json({ error: "graph build failed", detail: err.message });
   }
 });
 
