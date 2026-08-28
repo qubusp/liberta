@@ -1,74 +1,817 @@
-* { box-sizing: border-box; }
-body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: #0f1216;
-  color: #e6e6e6;
-  margin: 0;
+/* =========================================================================
+   Linda Console -- design tokens
+   A small GitLab-flavoured design system: deep indigo/purple primary accent,
+   a dark sidebar over a light workspace, rounded cards/badges/buttons.
+   ========================================================================= */
+:root {
+  /* Palette */
+  --color-primary: #6e49cb;
+  --color-primary-dark: #5a3aa8;
+  --color-primary-light: #f1ebfb;
+  --color-primary-text: #4c2f9e;
+
+  --sidebar-bg: #29173f;
+  --sidebar-bg-active: #3a2359;
+  --sidebar-text: #d8cdec;
+  --sidebar-text-muted: #9c8ab8;
+  --sidebar-text-active: #ffffff;
+  --sidebar-border: #3a2359;
+
+  --bg-page: #f4f3f8;
+  --bg-surface: #ffffff;
+  --bg-surface-alt: #faf9fc;
+  --bg-code: #f6f4fb;
+
+  --border-color: #e3e0ec;
+  --border-color-strong: #d3cee3;
+
+  --text-primary: #1f1a2e;
+  --text-secondary: #5c5670;
+  --text-muted: #8a839c;
+
+  --status-success-bg: #e4f7ea;
+  --status-success-text: #1b7a3d;
+  --status-info-bg: #e8effd;
+  --status-info-text: #2456c9;
+  --status-warning-bg: #fdf1de;
+  --status-warning-text: #a85e07;
+  --status-danger-bg: #fbe7e8;
+  --status-danger-text: #c62834;
+  --status-neutral-bg: #eeecf3;
+  --status-neutral-text: #635c78;
+
+  /* Radii */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+
+  /* Shadows */
+  --shadow-card: 0 1px 2px rgba(30, 20, 60, 0.06), 0 2px 10px rgba(30, 20, 60, 0.05);
+  --shadow-card-hover: 0 2px 4px rgba(30, 20, 60, 0.08), 0 6px 18px rgba(30, 20, 60, 0.08);
+  --shadow-popover: 0 8px 28px rgba(20, 12, 40, 0.18);
+
+  /* Spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  /* Motion */
+  --transition-fast: 120ms ease;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
-header {
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg-page);
+  color: var(--text-primary);
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--color-primary);
+}
+
+/* =========================================================================
+   App shell: sidebar + topbar + content
+   ========================================================================= */
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  width: 232px;
+  flex: 0 0 232px;
+  background: var(--sidebar-bg);
+  color: var(--sidebar-text);
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-4) var(--space-3);
+  position: sticky;
+  top: 0;
+  height: 100vh;
+}
+
+.sidebar-brand {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 1rem 1.5rem;
-  background: #1a1f27;
-  border-bottom: 1px solid #262c36;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-2) var(--space-5);
+  color: #ffffff;
 }
-header h1 { font-size: 1.1rem; margin: 0; color: #9fb3ff; }
-button.logout {
+
+.sidebar-brand-mark {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  background: var(--color-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.sidebar-brand-mark svg {
+  width: 16px;
+  height: 16px;
+}
+
+.sidebar-brand-name {
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  flex: 1 1 auto;
+}
+
+.sidebar-section-label {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--sidebar-text-muted);
+  padding: var(--space-3) var(--space-2) var(--space-1);
+}
+
+.nav-tab {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
   background: transparent;
-  color: #aaa;
-  border: 1px solid #333;
-  padding: 0.4rem 0.8rem;
-  border-radius: 6px;
+  color: var(--sidebar-text);
+  border: none;
+  padding: 0.55rem var(--space-2);
+  border-radius: var(--radius-md);
   cursor: pointer;
+  font-size: 0.86rem;
+  font-weight: 500;
+  text-align: left;
+  transition: background var(--transition-fast), color var(--transition-fast);
 }
-button.logout:hover { color: #fff; border-color: #666; }
 
-main {
+.nav-tab svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  opacity: 0.85;
+}
+
+.nav-tab:hover {
+  background: var(--sidebar-bg-active);
+  color: var(--sidebar-text-active);
+}
+
+.nav-tab.active {
+  background: var(--color-primary);
+  color: #ffffff;
+}
+
+.sidebar-footer {
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--sidebar-border);
+  color: var(--sidebar-text-muted);
+  font-size: 0.72rem;
+}
+
+/* =========================================================================
+   Topbar + content column
+   ========================================================================= */
+.content-column {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-5);
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.topbar-title {
+  margin-right: auto;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.whoami {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.whoami-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid var(--border-color-strong);
+  object-fit: cover;
+}
+
+.whoami-avatar-fallback {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--color-primary-light);
+  color: var(--color-primary-text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+main.view-content {
+  flex: 1 1 auto;
+  padding: var(--space-5);
+}
+
+.view[hidden] {
+  display: none;
+}
+
+.view-grid {
   display: grid;
-  grid-template-columns: 380px 1fr;
-  gap: 1rem;
-  padding: 1.5rem;
+  grid-template-columns: 420px 1fr;
+  gap: var(--space-4);
+  align-items: start;
 }
-section {
-  background: #161a21;
-  border: 1px solid #232833;
-  border-radius: 10px;
-  padding: 1rem 1.2rem;
+
+@media (max-width: 900px) {
+  .view-grid {
+    grid-template-columns: 1fr;
+  }
 }
-h2 { font-size: 0.95rem; margin: 0 0 0.8rem; color: #9fb3ff; }
-h3 { font-size: 0.85rem; margin: 1.2rem 0 0.5rem; color: #9fb3ff; }
 
-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid #232833; }
-th { color: #888; font-weight: 600; }
-tbody tr { cursor: pointer; }
-tbody tr:hover { background: #1e232c; }
+/* =========================================================================
+   Cards
+   ========================================================================= */
+.card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  padding: var(--space-4) var(--space-5);
+}
 
-.status-pill {
-  display: inline-block;
-  padding: 0.15rem 0.5rem;
-  border-radius: 999px;
+.card-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+h2.card-title {
+  font-size: 1rem;
+  font-weight: 700;
+  margin: 0;
+  color: var(--text-primary);
+}
+
+h3.card-subtitle {
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin: var(--space-4) 0 var(--space-2);
+  color: var(--text-muted);
+}
+
+.hint {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  margin: 0 0 var(--space-3);
+}
+
+.hint code {
+  background: var(--bg-code);
+  border: 1px solid var(--border-color);
+  padding: 0.05rem 0.35rem;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
   font-size: 0.75rem;
+}
+
+/* =========================================================================
+   Tables
+   ========================================================================= */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+th, td {
+  text-align: left;
+  padding: 0.55rem 0.6rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+th {
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+tbody tr {
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+tbody tr:hover {
+  background: var(--bg-surface-alt);
+}
+
+tbody tr:last-child td {
+  border-bottom: none;
+}
+
+tbody tr.selected-row {
+  background: var(--color-primary-light);
+}
+
+/* Sessions table sits in a narrower fixed-width column; keep long project
+   paths from blowing out the layout instead of shrinking every column. */
+#sessions-table {
+  table-layout: fixed;
+}
+#sessions-table th:nth-child(2),
+#sessions-table td:nth-child(2) {
+  max-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#sessions-table th:nth-child(4),
+#sessions-table td:nth-child(4) {
+  width: 56px;
+}
+
+.active-yes {
+  color: var(--status-success-text);
   font-weight: 600;
 }
-.status-running, .status-in_progress { background: #1c3a5e; color: #74c0fc; }
-.status-done, .status-completed, .status-succeeded { background: #1e3a2a; color: #69db7c; }
-.status-failed, .status-error, .status-blocked { background: #3a1e1e; color: #ff8787; }
-.status-pending, .status-queued, .status-waiting { background: #3a341e; color: #ffd43b; }
-.status-unknown { background: #2a2a2a; color: #aaa; }
 
+.active-no {
+  color: var(--text-muted);
+}
+
+/* =========================================================================
+   Badges / status pills
+   ========================================================================= */
+.status-pill,
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+  padding: 0.2rem 0.6rem;
+  border-radius: var(--radius-pill);
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.status-pill::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: 0 0 auto;
+}
+
+.status-running, .status-in_progress {
+  background: var(--status-info-bg);
+  color: var(--status-info-text);
+}
+.status-done, .status-completed, .status-succeeded {
+  background: var(--status-success-bg);
+  color: var(--status-success-text);
+}
+.status-failed, .status-error, .status-blocked {
+  background: var(--status-danger-bg);
+  color: var(--status-danger-text);
+}
+.status-pending, .status-queued, .status-waiting {
+  background: var(--status-warning-bg);
+  color: var(--status-warning-text);
+}
+.status-unknown {
+  background: var(--status-neutral-bg);
+  color: var(--status-neutral-text);
+}
+
+.badge-library {
+  background: var(--status-neutral-bg);
+  color: var(--status-neutral-text);
+}
+.badge-override {
+  background: var(--status-warning-bg);
+  color: var(--status-warning-text);
+}
+
+/* =========================================================================
+   Tab strip (top-level nav lives in the sidebar; this is for in-page tabs)
+   ========================================================================= */
+.detail-tabs {
+  display: flex;
+  gap: var(--space-1);
+  margin-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.detail-tab {
+  background: transparent;
+  color: var(--text-secondary);
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 0.55rem 0.2rem;
+  margin-right: var(--space-4);
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.detail-tab:hover {
+  color: var(--text-primary);
+}
+
+.detail-tab.active {
+  color: var(--color-primary-text);
+  border-bottom-color: var(--color-primary);
+}
+
+.detail-tab-panel {
+  display: none;
+}
+
+.detail-tab-panel.active {
+  display: block;
+}
+
+/* =========================================================================
+   Events log
+   ========================================================================= */
 #events-log {
-  background: #0b0d10;
-  border: 1px solid #232833;
-  border-radius: 6px;
-  padding: 0.8rem;
+  background: var(--text-primary);
+  color: #e6e2f2;
+  border: 1px solid var(--border-color-strong);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
   max-height: 420px;
   overflow-y: auto;
-  font-size: 0.78rem;
+  font-size: 0.76rem;
+  font-family: var(--font-mono);
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-.active-yes { color: #69db7c; font-weight: 600; }
-.active-no { color: #555; }
+/* =========================================================================
+   Forms: inputs, textareas, selects
+   ========================================================================= */
+input[type="text"],
+input[type="password"],
+select,
+textarea {
+  width: 100%;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color-strong);
+  border-radius: var(--radius-md);
+  padding: 0.55rem 0.7rem;
+  font-family: inherit;
+  font-size: 0.85rem;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+textarea {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  resize: vertical;
+  margin: var(--space-2) 0;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px var(--color-primary-light);
+}
+
+#import-skill-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+/* =========================================================================
+   Buttons
+   ========================================================================= */
+button {
+  font-family: inherit;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  border-radius: var(--radius-md);
+  padding: 0.5rem 0.95rem;
+  font-size: 0.83rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.btn-primary,
+#import-skill-form button,
+.editor-actions button:not(.danger):not(.subtle) {
+  background: var(--color-primary);
+  color: #ffffff;
+  border-color: var(--color-primary);
+}
+
+.btn-primary:hover,
+#import-skill-form button:hover,
+.editor-actions button:not(.danger):not(.subtle):hover {
+  background: var(--color-primary-dark);
+  border-color: var(--color-primary-dark);
+}
+
+.editor-actions button.subtle,
+button.logout {
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  border-color: var(--border-color-strong);
+}
+
+.editor-actions button.subtle:hover,
+button.logout:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.editor-actions button.danger {
+  background: var(--status-danger-bg);
+  color: var(--status-danger-text);
+  border-color: transparent;
+}
+
+.editor-actions button.danger:hover {
+  background: #f6cfd2;
+}
+
+button.logout {
+  border-radius: var(--radius-md);
+  padding: 0.45rem 0.85rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-table-action {
+  background: var(--bg-surface);
+  color: var(--color-primary-text);
+  border: 1px solid var(--border-color-strong);
+  border-radius: var(--radius-md);
+  padding: 0.35rem 0.7rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.btn-table-action:hover {
+  background: var(--color-primary-light);
+  border-color: var(--color-primary);
+}
+
+.editor-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.editor-actions button {
+  border-radius: var(--radius-md);
+  padding: 0.5rem 0.9rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+/* =========================================================================
+   Skill editor panel
+   ========================================================================= */
+.skill-editor {
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-color);
+}
+
+.skill-editor h4 {
+  margin: 0 0 var(--space-2);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  display: inline-block;
+  margin-right: var(--space-2);
+}
+
+/* =========================================================================
+   Login page (served inline from server.js -- kept in sync with this file)
+   ========================================================================= */
+.login-shell {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at top, #3a2359 0%, var(--sidebar-bg) 55%, #180b2b 100%);
+  font-family: var(--font-sans);
+  padding: var(--space-4);
+}
+
+.login-box {
+  background: var(--bg-surface);
+  padding: var(--space-6) var(--space-5);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-popover);
+  width: 320px;
+  max-width: 100%;
+}
+
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+.login-brand-mark {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  background: var(--color-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.login-brand-mark svg {
+  width: 18px;
+  height: 18px;
+}
+
+.login-box h1 {
+  font-size: 1.05rem;
+  margin: 0;
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+.login-box form {
+  margin: 0;
+}
+
+.login-box .field-label {
+  display: block;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: var(--space-1);
+}
+
+.login-box input[type="password"] {
+  width: 100%;
+}
+
+.login-box .btn-primary {
+  margin-top: var(--space-3);
+  width: 100%;
+  padding: 0.65rem;
+}
+
+.error-banner {
+  color: var(--status-danger-text);
+  background: var(--status-danger-bg);
+  border-radius: var(--radius-md);
+  padding: 0.55rem 0.75rem;
+  font-size: 0.8rem;
+  margin: 0 0 var(--space-3);
+}
+
+.divider {
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  margin: var(--space-4) 0;
+  position: relative;
+}
+
+.divider::before,
+.divider::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  width: 40%;
+  border-top: 1px solid var(--border-color);
+}
+
+.divider::before { left: 0; }
+.divider::after { right: 0; }
+
+.github-login {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: 0.6rem;
+  border-radius: var(--radius-md);
+  background: #24292f;
+  color: #ffffff;
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 0.85rem;
+  transition: background var(--transition-fast);
+}
+
+.github-login:hover {
+  background: #32383f;
+}
+
+/* =========================================================================
+   Responsive: collapse the sidebar to icon rail on narrow widths
+   ========================================================================= */
+@media (max-width: 720px) {
+  .sidebar {
+    width: 64px;
+    flex-basis: 64px;
+    padding: var(--space-3) var(--space-2);
+  }
+  .sidebar-brand-name,
+  .sidebar-section-label,
+  .nav-tab-label,
+  .sidebar-footer {
+    display: none;
+  }
+  .sidebar-brand {
+    justify-content: center;
+    padding: var(--space-2);
+  }
+  .nav-tab {
+    justify-content: center;
+    padding: 0.6rem;
+  }
+  main.view-content {
+    padding: var(--space-3);
+  }
+  .topbar {
+    padding: var(--space-2) var(--space-3);
+  }
+  .card {
+    padding: var(--space-3);
+  }
+}

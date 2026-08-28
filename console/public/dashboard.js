@@ -56,7 +56,12 @@
       activeTd.className = s.is_active ? "active-yes" : "active-no";
       tr.appendChild(activeTd);
 
-      tr.addEventListener("click", () => selectSession(s.id));
+      if (s.id === selectedSessionId) tr.classList.add("selected-row");
+      tr.addEventListener("click", () => {
+        sessionsBody.querySelectorAll("tr").forEach((row) => row.classList.remove("selected-row"));
+        tr.classList.add("selected-row");
+        selectSession(s.id);
+      });
       sessionsBody.appendChild(tr);
     }
 
@@ -131,11 +136,329 @@
     }
   }
 
+  async function loadWhoami() {
+    const whoamiEl = document.getElementById("whoami");
+    if (!whoamiEl) return;
+    try {
+      const data = await fetchJson("/api/whoami");
+      if (!data) return;
+      whoamiEl.textContent = "";
+      if (data.avatar_url) {
+        const img = document.createElement("img");
+        img.src = data.avatar_url;
+        img.alt = data.username || "";
+        img.className = "whoami-avatar";
+        whoamiEl.appendChild(img);
+      } else {
+        const fallback = document.createElement("span");
+        fallback.className = "whoami-avatar-fallback";
+        const name = data.username || "admin";
+        fallback.textContent = name.slice(0, 2).toUpperCase();
+        whoamiEl.appendChild(fallback);
+      }
+      const label = document.createElement("span");
+      label.textContent = data.username || "admin";
+      whoamiEl.appendChild(label);
+    } catch (err) {
+      // Non-critical -- leave the header without an identity label.
+    }
+  }
+
   async function tick() {
     await refreshSessions();
     await refreshDetail();
+    if (activeDetailTab === "skills") {
+      await refreshRunSkills();
+    }
   }
 
+  // -----------------------------------------------------------------
+  // Top-level nav: Runs vs Skills library
+  // -----------------------------------------------------------------
+  const runsView = document.getElementById("runs-view");
+  const skillsView = document.getElementById("skills-view");
+  const topbarTitle = document.getElementById("topbar-title");
+  const NAV_TITLES = { "runs-view": "Runs", "skills-view": "Skills library" };
+  document.querySelectorAll(".nav-tab").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".nav-tab").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      const target = btn.dataset.view;
+      runsView.hidden = target !== "runs-view";
+      skillsView.hidden = target !== "skills-view";
+      if (topbarTitle) topbarTitle.textContent = NAV_TITLES[target] || "";
+      if (target === "skills-view") {
+        refreshSkillsLibrary();
+      }
+    });
+  });
+
+  // -----------------------------------------------------------------
+  // Run detail: Task board vs Skills-for-this-run tabs
+  // -----------------------------------------------------------------
+  let activeDetailTab = "board";
+  const boardTabPanel = document.getElementById("detail-board-tab");
+  const skillsTabPanel = document.getElementById("detail-skills-tab");
+  document.querySelectorAll(".detail-tab").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".detail-tab").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      activeDetailTab = btn.dataset.detailTab;
+      boardTabPanel.classList.toggle("active", activeDetailTab === "board");
+      skillsTabPanel.classList.toggle("active", activeDetailTab === "skills");
+      if (activeDetailTab === "skills") {
+        refreshRunSkills();
+      }
+    });
+  });
+
+  // -----------------------------------------------------------------
+  // Skills for the currently selected run
+  // -----------------------------------------------------------------
+  const runSkillsBody = document.querySelector("#run-skills-table tbody");
+  const runSkillEditor = document.getElementById("run-skill-editor");
+  const runSkillEditorTitle = document.getElementById("run-skill-editor-title");
+  const runSkillEditorBadge = document.getElementById("run-skill-editor-badge");
+  const runSkillEditorContent = document.getElementById("run-skill-editor-content");
+  let runSkillsCache = [];
+  let selectedRunSkillName = null;
+
+  async function refreshRunSkills() {
+    if (!selectedSessionId) return;
+    try {
+      const data = await fetchJson(
+        "/api/sessions/" + encodeURIComponent(selectedSessionId) + "/skills"
+      );
+      if (!data) return;
+      runSkillsCache = data.skills || [];
+      renderRunSkills();
+    } catch (err) {
+      console.error("failed to refresh run skills", err);
+    }
+  }
+
+  function renderRunSkills() {
+    runSkillsBody.innerHTML = "";
+    for (const s of runSkillsCache) {
+      const tr = document.createElement("tr");
+
+      const nameTd = document.createElement("td");
+      nameTd.textContent = s.name;
+      tr.appendChild(nameTd);
+
+      const kindTd = document.createElement("td");
+      kindTd.textContent = s.kind;
+      tr.appendChild(kindTd);
+
+      const statusTd = document.createElement("td");
+      const badge = document.createElement("span");
+      badge.className = "badge " + (s.overridden ? "badge-override" : "badge-library");
+      badge.textContent = s.overridden ? "overridden for this run" : "library version";
+      statusTd.appendChild(badge);
+      tr.appendChild(statusTd);
+
+      const actionTd = document.createElement("td");
+      const editBtn = document.createElement("button");
+      editBtn.type = "button";
+      editBtn.className = "btn-table-action";
+      editBtn.textContent = "Edit / override";
+      editBtn.addEventListener("click", () => openRunSkillEditor(s.name));
+      actionTd.appendChild(editBtn);
+      tr.appendChild(actionTd);
+
+      runSkillsBody.appendChild(tr);
+    }
+  }
+
+  function openRunSkillEditor(name) {
+    const s = runSkillsCache.find((x) => x.name === name);
+    if (!s) return;
+    selectedRunSkillName = name;
+    runSkillEditorTitle.textContent = name;
+    runSkillEditorBadge.className = "badge " + (s.overridden ? "badge-override" : "badge-library");
+    runSkillEditorBadge.textContent = s.overridden
+      ? "Editing an override for THIS RUN ONLY"
+      : "No override yet -- saving will create one for THIS RUN ONLY";
+    runSkillEditorContent.value = s.content;
+    runSkillEditor.hidden = false;
+  }
+
+  document.getElementById("run-skill-save").addEventListener("click", async () => {
+    if (!selectedRunSkillName || !selectedSessionId) return;
+    try {
+      const res = await fetch(
+        "/api/sessions/" +
+          encodeURIComponent(selectedSessionId) +
+          "/skills/" +
+          encodeURIComponent(selectedRunSkillName),
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({ content: runSkillEditorContent.value }),
+        }
+      );
+      if (!res.ok) throw new Error("save failed: " + res.status);
+      await refreshRunSkills();
+      openRunSkillEditor(selectedRunSkillName);
+    } catch (err) {
+      alert("Failed to save override: " + err.message);
+    }
+  });
+
+  document.getElementById("run-skill-revert").addEventListener("click", async () => {
+    if (!selectedRunSkillName || !selectedSessionId) return;
+    try {
+      const res = await fetch(
+        "/api/sessions/" +
+          encodeURIComponent(selectedSessionId) +
+          "/skills/" +
+          encodeURIComponent(selectedRunSkillName),
+        { method: "DELETE", credentials: "same-origin" }
+      );
+      if (!res.ok && res.status !== 404) throw new Error("revert failed: " + res.status);
+      await refreshRunSkills();
+      openRunSkillEditor(selectedRunSkillName);
+    } catch (err) {
+      alert("Failed to revert override: " + err.message);
+    }
+  });
+
+  document.getElementById("run-skill-close").addEventListener("click", () => {
+    runSkillEditor.hidden = true;
+    selectedRunSkillName = null;
+  });
+
+  // -----------------------------------------------------------------
+  // Skills library (global, not run-scoped)
+  // -----------------------------------------------------------------
+  const skillsBody = document.querySelector("#skills-table tbody");
+  const skillDetail = document.getElementById("skill-detail");
+  const skillDetailTitle = document.getElementById("skill-detail-title");
+  const skillDetailBadge = document.getElementById("skill-detail-badge");
+  const skillDetailDescription = document.getElementById("skill-detail-description");
+  const skillDetailContent = document.getElementById("skill-detail-content");
+  const skillNote = document.getElementById("skill-note");
+  let selectedSkillName = null;
+  let selectedSkillSource = null;
+
+  async function refreshSkillsLibrary() {
+    try {
+      const data = await fetchJson("/api/skills");
+      if (!data) return;
+      renderSkillsLibrary(data.skills || []);
+    } catch (err) {
+      console.error("failed to refresh skills library", err);
+    }
+  }
+
+  function renderSkillsLibrary(skills) {
+    skillsBody.innerHTML = "";
+    for (const s of skills) {
+      const tr = document.createElement("tr");
+      tr.title = s.description || "";
+
+      const nameTd = document.createElement("td");
+      nameTd.textContent = s.name;
+      tr.appendChild(nameTd);
+
+      const kindTd = document.createElement("td");
+      kindTd.textContent = s.kind;
+      tr.appendChild(kindTd);
+
+      const sourceTd = document.createElement("td");
+      const badge = document.createElement("span");
+      badge.className = "badge " + (s.source === "imported" ? "badge-override" : "badge-library");
+      badge.textContent = s.source;
+      sourceTd.appendChild(badge);
+      tr.appendChild(sourceTd);
+
+      tr.addEventListener("click", () => openSkillDetail(s.name));
+      skillsBody.appendChild(tr);
+    }
+  }
+
+  async function openSkillDetail(name) {
+    try {
+      const data = await fetchJson("/api/skills/" + encodeURIComponent(name));
+      if (!data) return;
+      selectedSkillName = data.name;
+      selectedSkillSource = data.source;
+      skillDetailTitle.textContent = data.name;
+      skillDetailBadge.className = "badge " + (data.source === "imported" ? "badge-override" : "badge-library");
+      skillDetailBadge.textContent = data.source;
+      skillDetailDescription.textContent = data.description || "";
+      skillDetailContent.value = data.content;
+      skillNote.textContent = "";
+      document.getElementById("skill-delete").hidden = data.source !== "imported";
+      skillDetail.hidden = false;
+    } catch (err) {
+      console.error("failed to load skill", err);
+    }
+  }
+
+  document.getElementById("skill-save").addEventListener("click", async () => {
+    if (!selectedSkillName) return;
+    try {
+      const res = await fetch("/api/skills/" + encodeURIComponent(selectedSkillName), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ content: skillDetailContent.value }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || "save failed: " + res.status);
+      skillNote.textContent = body.note || "Saved.";
+      await refreshSkillsLibrary();
+    } catch (err) {
+      alert("Failed to save: " + err.message);
+    }
+  });
+
+  document.getElementById("skill-delete").addEventListener("click", async () => {
+    if (!selectedSkillName) return;
+    if (!confirm("Delete imported skill '" + selectedSkillName + "'?")) return;
+    try {
+      const res = await fetch("/api/skills/" + encodeURIComponent(selectedSkillName), {
+        method: "DELETE",
+        credentials: "same-origin",
+      });
+      if (!res.ok) {
+        const body = await res.json();
+        throw new Error(body.error || "delete failed: " + res.status);
+      }
+      skillDetail.hidden = true;
+      selectedSkillName = null;
+      await refreshSkillsLibrary();
+    } catch (err) {
+      alert("Failed to delete: " + err.message);
+    }
+  });
+
+  document.getElementById("import-skill-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const name = document.getElementById("import-name").value.trim();
+    const kind = document.getElementById("import-kind").value;
+    const description = document.getElementById("import-description").value.trim();
+    const content = document.getElementById("import-content").value;
+    try {
+      const res = await fetch("/api/skills", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ name, kind, description, content }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || "import failed: " + res.status);
+      document.getElementById("import-skill-form").reset();
+      await refreshSkillsLibrary();
+      openSkillDetail(name);
+    } catch (err) {
+      alert("Failed to import: " + err.message);
+    }
+  });
+
+  loadWhoami();
   tick();
   setInterval(tick, POLL_MS);
 })();

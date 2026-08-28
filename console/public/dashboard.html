@@ -6,37 +6,154 @@
 <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
-  <header>
-    <h1>Linda Console</h1>
-    <form method="POST" action="/logout"><button class="logout" type="submit">Log out</button></form>
-  </header>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <span class="sidebar-brand-mark">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M4 12L10 18L20 6" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </span>
+        <span class="sidebar-brand-name">Linda Console</span>
+      </div>
 
-  <main>
-    <section class="sessions-panel">
-      <h2>Sessions</h2>
-      <table id="sessions-table">
-        <thead>
-          <tr><th>Session</th><th>Project</th><th>Status</th><th>Active</th></tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-    </section>
+      <nav class="sidebar-nav">
+        <span class="sidebar-section-label">Orchestration</span>
+        <button type="button" class="nav-tab active" data-view="runs-view">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          <span class="nav-tab-label">Runs</span>
+        </button>
+        <button type="button" class="nav-tab" data-view="skills-view">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 3l2.5 5.5L20 9l-4 4 1 6-5-3-5 3 1-6-4-4 5.5-.5L12 3z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+          <span class="nav-tab-label">Skills library</span>
+        </button>
+      </nav>
 
-    <section class="detail-panel">
-      <h2 id="detail-title">Select a session</h2>
+      <div class="sidebar-footer">Linda orchestration harness</div>
+    </aside>
 
-      <h3>Task board</h3>
-      <table id="tasks-table">
-        <thead>
-          <tr><th>ID</th><th>Role</th><th>Wave</th><th>Status</th></tr>
-        </thead>
-        <tbody></tbody>
-      </table>
+    <div class="content-column">
+      <header class="topbar">
+        <span class="topbar-title" id="topbar-title">Runs</span>
+        <span id="whoami" class="whoami"></span>
+        <form method="POST" action="/logout"><button class="btn logout" type="submit">Log out</button></form>
+      </header>
 
-      <h3>Event log (tail)</h3>
-      <pre id="events-log"></pre>
-    </section>
-  </main>
+      <main id="runs-view" class="view view-content">
+        <div class="view-grid">
+          <section class="sessions-panel card">
+            <div class="card-header">
+              <h2 class="card-title">Sessions</h2>
+            </div>
+            <table id="sessions-table">
+              <thead>
+                <tr><th>Session</th><th>Project</th><th>Status</th><th>Active</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </section>
+
+          <section class="detail-panel card">
+            <div class="card-header">
+              <h2 id="detail-title" class="card-title">Select a session</h2>
+            </div>
+
+            <div class="detail-tabs">
+              <button type="button" class="detail-tab active" data-detail-tab="board">Task board</button>
+              <button type="button" class="detail-tab" data-detail-tab="skills">Skills for this run</button>
+            </div>
+
+            <div id="detail-board-tab" class="detail-tab-panel active">
+              <h3 class="card-subtitle">Task board</h3>
+              <table id="tasks-table">
+                <thead>
+                  <tr><th>ID</th><th>Role</th><th>Wave</th><th>Status</th></tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+
+              <h3 class="card-subtitle">Event log (tail)</h3>
+              <pre id="events-log"></pre>
+            </div>
+
+            <div id="detail-skills-tab" class="detail-tab-panel">
+              <p class="hint">
+                Skills used by <em>this run only</em>. Editing here sets a
+                <strong>per-run override</strong> -- it does not touch the shared
+                library and does not change the on-disk harness files. Revert to
+                drop back to the library version.
+              </p>
+              <table id="run-skills-table">
+                <thead>
+                  <tr><th>Name</th><th>Kind</th><th>Status</th><th></th></tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+              <div id="run-skill-editor" class="skill-editor" hidden>
+                <h4 id="run-skill-editor-title"></h4>
+                <span id="run-skill-editor-badge" class="badge"></span>
+                <textarea id="run-skill-editor-content" rows="20"></textarea>
+                <div class="editor-actions">
+                  <button type="button" id="run-skill-save">Save override for this run</button>
+                  <button type="button" id="run-skill-revert" class="danger">Revert to library version</button>
+                  <button type="button" id="run-skill-close" class="subtle">Close</button>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </main>
+
+      <main id="skills-view" class="view view-content" hidden>
+        <div class="view-grid">
+          <section class="sessions-panel card">
+            <div class="card-header">
+              <h2 class="card-title">Skills library</h2>
+            </div>
+            <p class="hint">
+              DB-managed library, separate from the on-disk <code>skills/</code>
+              and <code>agents/</code> files the harness actually executes.
+              Editing here never writes back to disk.
+            </p>
+            <table id="skills-table">
+              <thead>
+                <tr><th>Name</th><th>Kind</th><th>Source</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+
+            <h3 class="card-subtitle">Import a skill</h3>
+            <form id="import-skill-form">
+              <input type="text" id="import-name" placeholder="name" required />
+              <select id="import-kind">
+                <option value="agent">agent</option>
+                <option value="controller">controller</option>
+              </select>
+              <input type="text" id="import-description" placeholder="description (optional)" />
+              <textarea id="import-content" rows="8" placeholder="skill markdown content" required></textarea>
+              <button type="submit">Import skill</button>
+            </form>
+          </section>
+
+          <section class="detail-panel card">
+            <div class="card-header">
+              <h2 id="skill-detail-title" class="card-title">Select a skill</h2>
+            </div>
+            <div id="skill-detail" hidden>
+              <span id="skill-detail-badge" class="badge"></span>
+              <p id="skill-detail-description" class="hint"></p>
+              <textarea id="skill-detail-content" rows="24"></textarea>
+              <div class="editor-actions">
+                <button type="button" id="skill-save">Save to library</button>
+                <button type="button" id="skill-delete" class="danger">Delete</button>
+              </div>
+              <p id="skill-note" class="hint"></p>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+  </div>
 
   <script src="/dashboard.js"></script>
 </body>

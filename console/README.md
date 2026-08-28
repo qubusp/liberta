@@ -2,8 +2,11 @@
 
 A small authenticated dashboard showing, at a glance, which Linda
 orchestration session(s) exist, which one is active, its current task
-board, and a tail of its event log. Reads directly from the on-disk
-session store at `~/.claude/linda-runs/` -- no database, no build step.
+board, and a tail of its event log. The session store at
+`~/.claude/linda-runs/` remains the source of truth (the harness itself
+writes those files, unchanged) -- the console reads from a SQL
+database that mirrors it, kept in sync by a background loop. See
+"Database" below.
 
 ## Run it
 
@@ -54,6 +57,140 @@ no default password and no way to run this without one.
   (`/^[a-zA-Z0-9_.-]+$/`) and additionally confirms the resolved path is
   still inside the session-store directory before touching the
   filesystem, to rule out path traversal.
+
+## OAuth login (GitHub) -- optional, on top of the password login
+
+Password login (above) always works and needs no configuration. GitHub
+OAuth is a *second*, optional way to log in, for when you'd rather use a
+real identity than the shared password -- it's off by default and the
+login page looks exactly as it does today (no button, no behavior change)
+until you configure it.
+
+### 1. Create a GitHub OAuth App
+
+GitHub -> Settings -> Developer settings -> OAuth Apps -> New OAuth App.
+
+- **Homepage URL**: wherever this console is reachable, e.g.
+  `http://localhost:4177`.
+- **Authorization callback URL**: must match `LINDA_OAUTH_CALLBACK_URL`
+  below *exactly* (scheme, host, port, path) -- e.g.
+  `http://localhost:4177/auth/github/callback`.
+
+After creating it, GitHub gives you a **Client ID** and lets you generate
+a **Client Secret**.
+
+### 2. Set the env vars
+
+```
+LINDA_OAUTH_GITHUB_CLIENT_ID='...'
+LINDA_OAUTH_GITHUB_CLIENT_SECRET='...'
+LINDA_OAUTH_CALLBACK_URL='http://localhost:4177/auth/github/callback'
+LINDA_ALLOWED_GITHUB_USERS='yourgithubusername,teammateusername'
+```
+
+With all four set and `npm start` run, `/login` will show a "Log in with
+GitHub" button below the password form.
+
+`LINDA_ALLOWED_GITHUB_USERS` is a comma-separated allowlist of GitHub
+usernames (case-insensitive). **It's required** the moment
+`LINDA_OAUTH_GITHUB_CLIENT_ID`/`_SECRET` are set -- if it's missing or
+empty, the server fails loudly at boot and refuses to start, the same
+fail-closed pattern as the missing-password check. This exists because
+GitHub OAuth alone only proves "this is a real GitHub account," not "this
+account should have access to this console" -- without an allowlist,
+*any* GitHub user could complete the OAuth flow and get in.
+
+`LINDA_OAUTH_CALLBACK_URL` is similarly required once OAuth is enabled --
+it's what's sent to GitHub's authorize endpoint and must exactly match
+what's registered on the OAuth App, or GitHub will refuse the redirect.
+
+### How it interacts with the password login
+
+Both methods produce the exact same session cookie
+(`linda_console_session`) and are checked by the same auth middleware --
+whichever is present and valid wins. Password sessions are stateless (no
+DB row); GitHub sessions are backed by a row in the `web_sessions` table
+(so `/logout` can revoke one immediately, and so an expired/deleted row
+stops working even if the cookie itself hasn't expired yet). Signing in
+with GitHub upserts a row in `users` keyed on `(provider,
+provider_user_id)`, so the same GitHub account reuses the same `users`
+row on every subsequent login rather than creating a new one each time.
+
+## Database
+
+The console reads `/api/sessions` and `/api/sessions/:id` from a SQL
+database (via [Knex](https://knexjs.org)) instead of hitting the
+filesystem on every request. **This DB is a read cache, not the source
+of truth** -- it's populated and kept current by a background sync loop
+(`sync.js`, `startSyncLoop()`, runs every 3s) that reads
+`~/.claude/linda-runs/index.json` plus each session's `state.json`/
+`plan.json`/`events.jsonl` and upserts into the `runs`/`tasks`/`events`
+tables. The harness itself (the `linda` skill's controller,
+`scripts/wave-exec.js`, etc.) still writes those files directly and is
+completely unaware the DB exists. If a run was just created and the
+sync loop hasn't caught up to it yet, `GET /api/sessions/:id` falls
+back to reading the files directly for that one request.
+
+Two supported backends, picked via `DB_CLIENT`:
+
+- **`sqlite3`** (default) -- a local file at `console/data/linda.sqlite`
+  (the `data/` directory is created automatically on first boot if
+  missing, and is gitignored -- the DB file itself is never committed).
+  Nothing else to configure.
+- **`pg`** -- a real Postgres instance, for production/shared use.
+  Requires `DATABASE_URL` (a standard `postgres://user:pass@host:port/db`
+  connection string) to also be set. If `DB_CLIENT=pg` is given without
+  `DATABASE_URL`, the server fails loudly on boot and exits (same
+  fail-closed pattern as the missing-password check above) rather than
+  silently falling back to sqlite or starting half-configured.
+
+```
+DB_CLIENT=pg DATABASE_URL='postgres://user:pass@host:5432/linda' LINDA_CONSOLE_PASSWORD='...' npm start
+```
+
+The `users`/`web_sessions` tables also exist in the schema (created by
+the same startup `ensureSchema()` step) but aren't used by anything
+yet -- they're there for a later piece of OAuth-login work to build on
+top of.
+
+## Skills
+
+The console has a second, DB-managed "skills library" separate from the
+on-disk harness files (`skills/linda/SKILL.md`, `agents/*.md`) -- it's a
+staging/reference/override layer for the console UI only, and it never
+changes what the actual harness controller or subagents execute.
+Concretely:
+
+- **Library.** On first boot, if the `skills` table is empty, it's
+  seeded once from `skills/linda/SKILL.md` (as the `linda` controller)
+  and every `agents/*.md` file (one row per agent). This only happens
+  once -- once the table has rows, restarts never re-seed it, so any
+  hand-edits made later through the UI (`GET/PUT/POST/DELETE
+  /api/skills*`) are never clobbered. Editing a library skill here,
+  built-in or imported, only ever updates its row in the DB -- **it does
+  not write back to `skills/` or `agents/` on disk.** Only
+  `source: "imported"` skills (added via the "Import skill" form or
+  `POST /api/skills`) can be deleted; built-in ones can be edited but
+  not removed from the library.
+- **Per-run overrides.** From a run's detail view, its "Skills for this
+  run" tab lets you set a per-run override for any library skill
+  (`PUT /api/sessions/:id/skills/:name`) -- useful for experimenting
+  with a modified prompt against one specific run without touching the
+  shared library other runs see. `GET /api/sessions/:id/skills` returns
+  every library skill with an `overridden` flag; when true, `content`
+  is the override's text and `library_content` is what the unmodified
+  library still has. `DELETE /api/sessions/:id/skills/:name` reverts
+  that run back to the library version.
+- **Import.** `POST /api/skills` with `{name, kind, content,
+  description}` (`kind` is `"controller"` or `"agent"`) adds a brand
+  new skill to the library with `source` forced to `"imported"`
+  server-side. 409s if the name is already taken.
+
+None of this is wired into how `scripts/wave-exec.js` or the harness
+itself resolves a skill at run time -- that still only ever reads the
+files under `skills/`/`agents/` directly. This library is a management
+surface for browsing/editing/experimenting, not a second source of
+truth the harness consults.
 
 ## Deliberately minimal -- not for public exposure
 

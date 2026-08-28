@@ -48,33 +48,82 @@ function timingSafeStringEqual(a, b) {
   return crypto.timingSafeEqual(bufA, bufB);
 }
 
-function makeSessionCookie(secret) {
-  const sid = crypto.randomBytes(24).toString("hex");
-  const exp = Date.now() + SESSION_TTL_MS;
-  const payload = JSON.stringify({ sid, exp });
-  const payloadB64 = base64url(payload);
+// Generic signed-payload cookie helpers. Both the password-login session
+// cookie and the OAuth-login session cookie are built on these -- same
+// base64url-JSON-plus-HMAC-SHA256 shape, same verification steps
+// (constant-time signature compare, then expiry check). Keeping this as
+// one underlying mechanism (rather than two separate cookie formats) is
+// what lets a single auth middleware verify either kind of login with
+// one code path -- see server.js.
+function makeSignedPayloadCookie(payload, secret) {
+  const payloadB64 = base64url(JSON.stringify(payload));
   const sig = sign(payloadB64, secret);
   return `${payloadB64}.${sig}`;
 }
 
-function verifySessionCookie(cookieValue, secret) {
-  if (!cookieValue || typeof cookieValue !== "string") return false;
+// Returns the parsed payload object if the cookie's signature is valid
+// and it isn't expired, otherwise `null`. Callers that only care about
+// "is this a valid, unexpired signed cookie at all" (e.g. a short-lived
+// CSRF state cookie) can just check the return value is truthy; callers
+// that need to distinguish payload shapes (e.g. the auth middleware
+// distinguishing a password session from an OAuth session) inspect the
+// returned fields.
+function verifySignedPayloadCookie(cookieValue, secret) {
+  if (!cookieValue || typeof cookieValue !== "string") return null;
   const parts = cookieValue.split(".");
-  if (parts.length !== 2) return false;
+  if (parts.length !== 2) return null;
   const [payloadB64, sig] = parts;
 
   const expectedSig = sign(payloadB64, secret);
-  if (!timingSafeStringEqual(sig, expectedSig)) return false;
+  if (!timingSafeStringEqual(sig, expectedSig)) return null;
 
   let payload;
   try {
     payload = JSON.parse(fromBase64url(payloadB64).toString("utf8"));
   } catch (err) {
-    return false;
+    return null;
   }
-  if (!payload || typeof payload.exp !== "number") return false;
-  if (Date.now() > payload.exp) return false;
+  if (!payload || typeof payload.exp !== "number") return null;
+  if (Date.now() > payload.exp) return null;
+  return payload;
+}
+
+function makeSessionCookie(secret) {
+  const sid = crypto.randomBytes(24).toString("hex");
+  const exp = Date.now() + SESSION_TTL_MS;
+  return makeSignedPayloadCookie({ sid, exp }, secret);
+}
+
+// Unchanged external behavior for existing callers: returns a boolean.
+// Password-login sessions are stateless (the signed cookie itself is the
+// whole session, no DB row), so "valid signature + not expired" is
+// sufficient here -- this deliberately does NOT accept an OAuth-session
+// payload (one with a `wsid` field), since that kind of session needs a
+// live `web_sessions` DB row checked too; see
+// `verifyOAuthSessionCookiePayload` / server.js's combined middleware.
+function verifySessionCookie(cookieValue, secret) {
+  const payload = verifySignedPayloadCookie(cookieValue, secret);
+  if (!payload) return false;
+  if (payload.wsid) return false;
   return true;
+}
+
+// Builds the OAuth-login session cookie: signed payload carrying a
+// reference to a `web_sessions.id` row plus its own expiry (mirrors the
+// row's `expires_at`, so an expired-but-not-yet-cleaned-up DB row can't
+// keep a cookie valid past its stated lifetime).
+function makeOAuthSessionCookie(webSessionId, expiresAtMs, secret) {
+  return makeSignedPayloadCookie({ wsid: webSessionId, exp: expiresAtMs }, secret);
+}
+
+// Returns the `web_sessions.id` referenced by a valid, unexpired
+// OAuth-session cookie, or `null` if the cookie isn't a valid OAuth
+// session cookie at all (wrong signature, expired, or it's actually a
+// password-login cookie with no `wsid`).
+function verifyOAuthSessionCookiePayload(cookieValue, secret) {
+  const payload = verifySignedPayloadCookie(cookieValue, secret);
+  if (!payload || !payload.wsid) return null;
+  return payload.wsid;
 }
 
 // Simple in-memory sliding-window rate limiter, keyed by IP.
@@ -102,6 +151,10 @@ module.exports = {
   SESSION_TTL_MS,
   makeSessionCookie,
   verifySessionCookie,
+  makeSignedPayloadCookie,
+  verifySignedPayloadCookie,
+  makeOAuthSessionCookie,
+  verifyOAuthSessionCookiePayload,
   timingSafeStringEqual,
   createLoginRateLimiter,
 };
