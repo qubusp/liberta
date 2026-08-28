@@ -440,6 +440,53 @@ function readJsonSafe(filePath) {
   }
 }
 
+// Reads a session's plan.json for the graph route. readJsonSafe above
+// collapses THREE different outcomes into a bare `null` -- "no plan.json
+// yet", "plan.json exists but cannot be opened", and "plan.json is not
+// valid JSON" -- which makes it impossible for a caller to tell a normal
+// session from a faulty one. This variant keeps them apart:
+//   * ENOENT  -> null. A session with no plan.json yet is NORMAL (the
+//                controller writes it after planning), NOT a fault, so
+//                the graph must not flag it as degraded.
+//   * any other fs error (EACCES, EISDIR, EIO, ELOOP, ...) -> rethrown,
+//                so the caller can mark the session degraded.
+//   * invalid JSON -> the SyntaxError from JSON.parse is rethrown too.
+//                JUDGEMENT CALL, documented deliberately: a plan.json
+//                that exists but does not parse is counted as DEGRADED,
+//                not as "no plan". Rendering a corrupt plan as a healthy
+//                empty session is the exact failure mode this flag
+//                exists to prevent; a half-written file caught mid-write
+//                self-heals on the next poll, so a transient flag is the
+//                cheaper error of the two.
+function readPlanForGraph(filePath) {
+  let raw;
+  try {
+    raw = fs.readFileSync(filePath, "utf8");
+  } catch (err) {
+    if (err && err.code === "ENOENT") return null;
+    throw err;
+  }
+  return JSON.parse(raw);
+}
+
+// The graph route is POLLED, so a permanently unreadable file would emit
+// one stderr line per poll forever. Log once per (session, file) per
+// process instead, and forget the key when that file reads cleanly again
+// so a later recurrence is logged afresh (i.e. log on transition). The
+// set holds at most 2 short keys per known session.
+const graphDegradedLogged = new Set();
+
+function logGraphDegradedOnce(id, file, err) {
+  const key = id + "\u0000" + file;
+  if (graphDegradedLogged.has(key)) return;
+  graphDegradedLogged.add(key);
+  console.error(`graph: unreadable ${file} for session ${id}:`, err && err.message);
+}
+
+function clearGraphDegraded(id, file) {
+  graphDegradedLogged.delete(id + "\u0000" + file);
+}
+
 function readIndex() {
   const idx = readJsonSafe(path.join(LIBERTA_RUNS_DIR, "index.json"));
   if (!idx || !Array.isArray(idx.sessions)) {
@@ -558,16 +605,29 @@ app.get("/api/sessions", async (req, res) => {
 // logic of its own, it only gathers input for the pure builder.
 //
 // PER-SESSION FAULT ISOLATION: the per-session disk reads are each
-// wrapped in their own try/catch below. readJsonSafe swallows its own
-// errors, but tailLines does NOT -- it guards statSync only, so an
+// wrapped in their own try/catch below. plan.json is read with
+// readPlanForGraph (NOT readJsonSafe, which would swallow the fault and
+// make the catch dead code), and tailLines guards statSync only, so an
 // events.jsonl that exists but cannot be opened (EACCES, EISDIR, EIO)
-// throws out of the read. Without the inner catch, ONE unreadable file
-// would fail the whole graph for every other session. With it, that
+// throws out of the read. Without the inner catches, ONE unreadable file
+// would fail the whole graph for every other session. With them, that
 // session degrades to an empty plan/event list and its node still
-// appears, carrying `degraded: true` (plus `degraded_sources`, the list
-// of files that could not be read) so the mindmap can flag it rather
-// than silently showing it as a session with no plan. Every other node
-// is unaffected, and the response is still 200.
+// appears, carrying `degraded: true` plus `degraded_sources` -- the
+// subset of ["plan.json", "events.jsonl"] that could not be read as
+// usable data -- so the mindmap can flag it rather than silently showing
+// it as a session with no plan. Every other node is unaffected, and the
+// response is still 200.
+//
+// WHAT COUNTS AS DEGRADED, exactly: a file that EXISTS but could not be
+// turned into data -- unopenable (EACCES), a directory in its place
+// (EISDIR), an I/O error, or (for plan.json) content that is not valid
+// JSON. A file that is simply ABSENT is NOT degraded: a session with no
+// plan.json yet, or no events.jsonl yet, is a normal early-life session,
+// and flagging it would make the flag meaningless.
+//
+// LOG VOLUME: this route is polled, so the server-side log line for a
+// degraded file is emitted once per (session, file) per process, and
+// re-armed when that file reads cleanly again -- not once per request.
 //
 // NODE SHAPE NOTE: `degraded`/`degraded_sources` are added HERE, not in
 // session-graph.js -- the builder is pure and knows nothing about
@@ -609,13 +669,18 @@ app.get("/api/sessions/graph", async (req, res, next) => {
       if (!isPathInsideRunsDir(dir)) continue;
 
       // Per-file, so an unreadable plan.json does not also cost this
-      // session its events (and vice versa). readJsonSafe never throws;
-      // it is wrapped anyway so this stays correct if it ever changes.
+      // session its events (and vice versa). NOTE: readJsonSafe is NOT
+      // used here -- it returns null for a missing file, an unopenable
+      // file and a corrupt file alike, which would make this catch dead
+      // code and `degraded` permanently false for plan.json.
+      // readPlanForGraph returns null only for ENOENT and throws for the
+      // real faults.
       const failed = [];
       try {
-        plans[id] = readJsonSafe(path.join(dir, "plan.json"));
+        plans[id] = readPlanForGraph(path.join(dir, "plan.json"));
+        clearGraphDegraded(id, "plan.json");
       } catch (err) {
-        console.error(`graph: unreadable plan.json for session ${id}:`, err && err.message);
+        logGraphDegradedOnce(id, "plan.json", err);
         plans[id] = null;
         failed.push("plan.json");
       }
@@ -631,8 +696,9 @@ app.get("/api/sessions/graph", async (req, res, next) => {
             return { raw: line };
           }
         });
+        clearGraphDegraded(id, "events.jsonl");
       } catch (err) {
-        console.error(`graph: unreadable events.jsonl for session ${id}:`, err && err.message);
+        logGraphDegradedOnce(id, "events.jsonl", err);
         events[id] = [];
         failed.push("events.jsonl");
       }
