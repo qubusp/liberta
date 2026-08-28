@@ -206,20 +206,69 @@ every visual/UI task can produce real, logged-in evidence the same way:
   `console/auth.js` rather than guessing it); then drives the system
   Google Chrome via `puppeteer-core` (no bundled-browser download) with
   that cookie set, navigates to a path, and writes full-page PNGs at both
-  1440x900 and 390x844. It hard-fails if the captured page still shows
-  the login form -- a false "success" here would poison every later
-  visual task, so it's checked explicitly rather than assumed.
+  1440x900 and 390x844. It hard-fails, writing no PNG at all, unless the
+  page positively proves it is the authenticated view -- a false
+  "success" here would poison every later visual task.
 
   ```
   node console/scripts/shot.mjs \
     --out ./shots --path / --label dashboard-home \
-    [--reduced-motion] [--script ./my-interaction.mjs]
+    [--reduced-motion] [--script ./my-interaction.mjs] \
+    [--expect-selector '#some-marker']
   ```
 
   `--script <file.mjs>` is an ES module exporting `async function
   run(page)`, executed after login + navigation and before the
   screenshots -- e.g. to click into a panel or type a message before
   capturing.
+
+  `--expect-selector <css>` overrides the default authenticated-view
+  marker (see below) with your own CSS selector, for a future view whose
+  markup differs. Repeat the flag to require several selectors. It is
+  always ANDed with the other conditions, so it can only narrow what
+  counts as authenticated -- it cannot weaken the guard.
+
+  **The auth guard is an allowlist, not a blocklist -- deliberately.**
+  The original guard rejected a capture only when `input[name=password]`
+  was present, and that blocklist was defeated: a `--script` hook that
+  cleared cookies and navigated to `/api/sessions` produced the plain
+  body `{"error":"unauthorized"}`, which has no password input, so the
+  tool exited 0 and wrote two real PNGs of an *unauthenticated* page. Any
+  blocklist has this shape of hole, because "not the login form" is not
+  the same claim as "the authenticated dashboard". A capture is therefore
+  now valid only if **all** of the following hold, checked in the live
+  page:
+
+  - the authenticated-view marker(s) are present in the DOM -- by default
+    `#sessions-table` **and** `#whoami`, which exist only in
+    `console/public/dashboard.html` and are served behind auth;
+  - `document.contentType` is `text/html`, so a JSON or plain-text error
+    body fails before the selectors are even consulted;
+  - the page URL is same-origin with the harness base URL
+    (`http://localhost:4999`);
+  - `input[name=password]` is absent (the old check, kept but now
+    subordinate).
+
+  These are asserted after navigation, after the `--script` hook, and --
+  decisively -- immediately before *each* of the two screenshot writes,
+  since the viewport resize or a navigation the script scheduled can
+  change the page in between. On failure the message names which
+  condition failed plus the actual URL and contentType, and any PNG this
+  invocation already wrote is deleted, so a failed run never leaves
+  partial evidence for a later task to pick up.
+
+- **`console/scripts/probes/auth-bypass.mjs`** is the exact bypass above,
+  committed as a permanent regression probe: a `--script` module that
+  clears all cookies and navigates to `/api/sessions`. Re-run it whenever
+  the guard is touched; it MUST exit non-zero and leave zero PNGs.
+
+  ```
+  rm -rf /tmp/shot-bypass
+  node console/scripts/shot.mjs --label bypass --out /tmp/shot-bypass \
+    --script console/scripts/probes/auth-bypass.mjs
+  echo "exit=$?"          # must be non-zero
+  ls /tmp/shot-bypass/*.png | wc -l   # must be 0
+  ```
 
 - **`console/scripts/fixture-sessions.mjs`** writes (`create`) and
   removes (`clean`) four throwaway session-store trees under
