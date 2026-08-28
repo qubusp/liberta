@@ -199,9 +199,9 @@ so a screenshot of `/login` proves nothing about what a logged-in
 operator actually sees. Two scripts under `console/scripts/` exist so
 every visual/UI task can produce real, logged-in evidence the same way:
 
-- **`console/scripts/shot.mjs`** boots the console itself (on port 4999,
-  with fixed test credentials) if nothing is already listening there,
-  tearing it back down on exit if it started it; logs in over HTTP to get
+- **`console/scripts/shot.mjs`** boots a console of its own (preferred
+  port 4999, credentials generated fresh for that one invocation) and
+  tears it back down on exit; logs in over HTTP to get
   the real signed session cookie (reading the cookie name from
   `console/auth.js` rather than guessing it); then drives the system
   Google Chrome via `puppeteer-core` (no bundled-browser download) with
@@ -222,11 +222,81 @@ every visual/UI task can produce real, logged-in evidence the same way:
   screenshots -- e.g. to click into a panel or type a message before
   capturing.
 
-  `--expect-selector <css>` overrides the default authenticated-view
-  marker (see below) with your own CSS selector, for a future view whose
-  markup differs. Repeat the flag to require several selectors. It is
-  always ANDed with the other conditions, so it can only narrow what
-  counts as authenticated -- it cannot weaken the guard.
+  `--expect-selector <css>` **adds** a required CSS selector on top of the
+  default authenticated-view markers (see below); it does **not** replace
+  them. The requirement is `#sessions-table` AND `#whoami` AND every
+  selector you passed, ANDed in turn with the other conditions -- so the
+  flag can only ever narrow what counts as authenticated. Repeat it to
+  require several selectors. There is deliberately **no** flag that
+  replaces the defaults.
+
+  This used to be untrue, and the previous wording here -- which claimed
+  the flag overrides the default marker yet could not make the guard any
+  weaker -- was wrong in a way that mattered: `--expect-selector`
+  *replaced* the defaults, so a broad selector made the guard strictly
+  weaker. An auditor combined
+  `--expect-selector body` with a cookie-clearing `--script` that
+  navigated to `/logout`, and the tool exited 0 and wrote two PNGs of a
+  genuinely unauthenticated Express 404 page -- the 1440 one being a blank
+  white error page. Naming a chat-panel / pixel-art / mindmap marker is
+  the intended use of this flag; naming something broad is now harmless
+  rather than a bypass.
+
+  **Environment overrides.**
+
+  - `SHOT_PORT` (falling back to `PORT`, then `4999`) sets the preferred
+    port for the child console.
+  - `LIBERTA_CHROME_PATH` (falling back to `CHROME_PATH`) points at the
+    Chrome/Chromium binary. Without either, the macOS default
+    `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome` is
+    used.
+
+  **It always starts its own console, never attaches to yours.** The port
+  was once hardcoded to `4999` and *any* listener already there was
+  reused. With visual tasks running concurrently that is a real hazard:
+  a second `shot.mjs` -- or an unrelated console -- holding 4999 meant
+  this tool would screenshot a **different** console, and since that
+  console serves the same markup on the same origin, the auth guard
+  certified it happily and the evidence described the wrong tree. Now the
+  preferred port is used only if it is provably free, otherwise a free
+  port is chosen automatically; the console is always spawned as a child;
+  we wait for the `listening on` line on *that child's own stdout pipe*,
+  which no foreign process can produce; and we then log in with the
+  password `crypto.randomBytes` generated for this invocation, which no
+  foreign console can accept. If that identity proof fails, the run
+  aborts loudly rather than capturing a server it cannot prove is its
+  own.
+
+  **Credentials are per-invocation.** They used to be the constants
+  a pair of fixed strings committed in a public repo, while
+  `server.js` does `app.listen(PORT)` and therefore binds *all*
+  interfaces. During a screenshot run that made the real console -- real
+  `console/data/liberta.sqlite`, real `~/.claude/liberta-runs` -- reachable
+  on `0.0.0.0`, with a *published* signing secret, so a LAN-adjacent
+  attacker could forge a valid session cookie without knowing the
+  password. Both values are now `crypto.randomBytes` per run and never
+  logged. Note that this closes the credential half only: the child
+  console still binds every interface, because the bind address lives in
+  `server.js` (`app.listen(PORT)`), which `shot.mjs` cannot change from
+  the outside. Making `server.js` bind `127.0.0.1` (or honour a
+  `LIBERTA_CONSOLE_HOST` env var) remains an open follow-up.
+
+  **Stale evidence is cleared up front.** Cleanup used to delete only the
+  PNGs written by the current invocation, so a run that failed at the
+  first checkpoint left the *previous* run's `<label>-1440.png` sitting at
+  exactly the path a downstream task reads -- stale evidence surviving a
+  non-zero exit. `shot.mjs` now deletes any pre-existing PNG at the paths
+  it is about to write, before it does anything else.
+
+  **A known, nondeterministic screenshot-time failure.** During a
+  `fullPage` capture puppeteer transiently drives `innerWidth` to 1 while
+  it resizes for the full-page shot. On a page with a narrow-viewport
+  `matchMedia` listener that can fire the listener mid-capture and surface
+  as a roughly 30-second hang ending in
+  `Page.captureScreenshot timed out`. It **fails closed** -- non-zero
+  exit, no PNG -- and it is nondeterministic, so a retry usually
+  succeeds. Do not mistake it for the tool hanging, and do not "fix" it by
+  weakening the guard.
 
   **The auth guard is an allowlist, not a blocklist -- deliberately.**
   The original guard rejected a capture only when `input[name=password]`
@@ -239,13 +309,15 @@ every visual/UI task can produce real, logged-in evidence the same way:
   now valid only if **all** of the following hold, checked in the live
   page:
 
-  - the authenticated-view marker(s) are present in the DOM -- by default
+  - the default authenticated-view markers are present in the DOM --
     `#sessions-table` **and** `#whoami`, which exist only in
-    `console/public/dashboard.html` and are served behind auth;
+    `console/public/dashboard.html` and are served behind auth. These are
+    always required and cannot be switched off from the command line;
+  - every `--expect-selector` the caller passed is *also* present;
   - `document.contentType` is `text/html`, so a JSON or plain-text error
     body fails before the selectors are even consulted;
   - the page URL is same-origin with the harness base URL
-    (`http://localhost:4999`);
+    (`http://localhost:<the port this run chose>`);
   - `input[name=password]` is absent (the old check, kept but now
     subordinate).
 
@@ -253,9 +325,9 @@ every visual/UI task can produce real, logged-in evidence the same way:
   decisively -- immediately before *each* of the two screenshot writes,
   since the viewport resize or a navigation the script scheduled can
   change the page in between. On failure the message names which
-  condition failed plus the actual URL and contentType, and any PNG this
-  invocation already wrote is deleted, so a failed run never leaves
-  partial evidence for a later task to pick up.
+  condition failed plus the actual URL and contentType, and every PNG at
+  this label/out-dir's paths is deleted, so a failed run never leaves
+  partial or stale evidence for a later task to pick up.
 
 - **`console/scripts/probes/auth-bypass.mjs`** is the exact bypass above,
   committed as a permanent regression probe: a `--script` module that
