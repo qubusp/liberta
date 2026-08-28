@@ -385,7 +385,42 @@ function mergeRoleWarnings(existing, incoming) {
   return out;
 }
 
-// --- mode: record a task result -------------------------------------------
+// Resolve whether a single depends_on entry is satisfied for the purposes
+// of the merge gate. Same-wave dependencies are looked up in the current
+// wave's own results map (fast path, no git calls). A dependency that is
+// not in the current wave's results is assumed to belong to an EARLIER
+// wave: it is resolved against plan.json (must be status "done" and
+// passing true), then belt-and-braces confirmed by checking that the
+// dependency's own recorded branch (from its wave's wave-state.json) is
+// actually an ancestor of the wave branch being recorded into. Anything
+// that can't be positively confirmed this way is treated as unsatisfied,
+// so pending/failed/unknown dependencies (same-wave or cross-wave) still
+// block, exactly as before.
+function isDepSatisfied(sessionId, gitRoot, waveBranch, depId, state, planTasksById) {
+  const local = state.results[depId];
+  if (local) {
+    return !!(local.passed && local.merged);
+  }
+
+  // Not in this wave's results -- resolve against plan.json as a
+  // cross-wave (presumably already-merged) dependency.
+  const depTask = planTasksById[depId];
+  if (!depTask) return false;
+  if (depTask.status !== "done" || depTask.passing !== true) return false;
+
+  const depWave = depTask.wave;
+  if (depWave === undefined || depWave === null) return false;
+
+  const depState = loadWaveState(sessionId, depWave);
+  const depResult = depState.results[depId];
+  if (!depResult || !depResult.passed || !depResult.merged || !depResult.branch) {
+    return false;
+  }
+
+  // Confirm the dependency's branch is genuinely an ancestor of the wave
+  // branch we're about to merge into -- don't just trust plan.json state.
+  return gitOk(gitRoot, ["merge-base", "--is-ancestor", depResult.branch, waveBranch]);
+}
 
 function modeRecord(sessionId, wave, taskId, opts, flags) {
   const dir = sessionDir(sessionId);
@@ -431,10 +466,10 @@ function modeRecord(sessionId, wave, taskId, opts, flags) {
       merged = true;
     } else {
       const dependsOn = task.depends_on || [];
-      const depsMerged = dependsOn.every((depId) => {
-        const r = state.results[depId];
-        return r && r.passed && r.merged;
-      });
+      const planTasksById = Object.fromEntries(tasks.map((t) => [String(t.id), t]));
+      const depsMerged = dependsOn.every((depId) =>
+        isDepSatisfied(sessionId, gitRoot, waveBranch, depId, state, planTasksById)
+      );
       if (!depsMerged) {
         merged = false;
         blocker = blocker || "awaiting dependency merge";
