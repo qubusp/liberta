@@ -2,7 +2,7 @@
 
 // ---------------------------------------------------------------------
 // Knex connection module. The DB here is a queryable *mirror* of the
-// file-based Linda run store (~/.claude/linda-runs/) -- the harness
+// file-based Liberta run store (~/.claude/liberta-runs/) -- the harness
 // itself (SKILL.md's controller, scripts/wave-exec.js, etc.) keeps
 // writing files unchanged and remains the source of truth. sync.js is
 // what keeps this DB in sync with those files; this module only owns
@@ -36,7 +36,7 @@ if (DB_CLIENT === "pg" || DB_CLIENT === "postgres" || DB_CLIENT === "postgresql"
   if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true });
   }
-  const dbFile = path.join(dataDir, "linda.sqlite");
+  const dbFile = path.join(dataDir, "liberta.sqlite");
   knex = Knex({
     client: "sqlite3",
     connection: { filename: dbFile },
@@ -124,7 +124,7 @@ async function ensureSchema() {
   // ---------------------------------------------------------------------
   // Skills library + per-run overrides. This is a management/staging
   // layer only -- see console/README.md's "Skills" section. It does NOT
-  // change how the harness itself (skills/linda/SKILL.md,
+  // change how the harness itself (skills/liberta/SKILL.md,
   // agents/*.md) is executed by Claude Code; it's a separate DB-backed
   // copy the console UI reads/writes, seeded once from those files at
   // first boot (see seedSkillsFromDisk below).
@@ -156,7 +156,7 @@ async function ensureSchema() {
 
 // ---------------------------------------------------------------------
 // One-time seed of the `skills` table from the on-disk harness files
-// (skills/linda/SKILL.md as the "linda" controller, every agents/*.md as
+// (skills/liberta/SKILL.md as the "liberta" controller, every agents/*.md as
 // an agent). Only runs if `skills` is currently empty, so hand-edits made
 // later via the console UI are never clobbered by a restart. This reads
 // those files exactly once at seed time -- it never writes back to disk.
@@ -174,11 +174,11 @@ async function seedSkillsFromDisk() {
   const repoRoot = path.join(__dirname, "..");
   const rows = [];
 
-  const controllerPath = path.join(repoRoot, "skills", "linda", "SKILL.md");
+  const controllerPath = path.join(repoRoot, "skills", "liberta", "SKILL.md");
   if (fs.existsSync(controllerPath)) {
     const content = fs.readFileSync(controllerPath, "utf8");
     rows.push({
-      name: "linda",
+      name: "liberta",
       kind: "controller",
       content,
       source: "built-in",

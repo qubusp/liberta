@@ -28,31 +28,31 @@ const oauth = require("./auth-oauth");
 // Boot-time password check. Never fall back to a default/blank password
 // -- fail loudly and refuse to start instead.
 // ---------------------------------------------------------------------
-const ADMIN_PASSWORD = process.env.LINDA_CONSOLE_PASSWORD;
+const ADMIN_PASSWORD = process.env.LIBERTA_CONSOLE_PASSWORD;
 if (!ADMIN_PASSWORD || ADMIN_PASSWORD.length === 0) {
   process.stderr.write(
-    "FATAL: LINDA_CONSOLE_PASSWORD is not set. Refusing to start with no " +
-      "password configured. Set LINDA_CONSOLE_PASSWORD and try again.\n"
+    "FATAL: LIBERTA_CONSOLE_PASSWORD is not set. Refusing to start with no " +
+      "password configured. Set LIBERTA_CONSOLE_PASSWORD and try again.\n"
   );
   process.exit(1);
 }
 
-// Secret used to HMAC-sign session cookies. If LINDA_CONSOLE_SECRET isn't
+// Secret used to HMAC-sign session cookies. If LIBERTA_CONSOLE_SECRET isn't
 // given, generate a random one at boot -- sessions won't survive a
 // restart in that case (every restart invalidates all existing session
 // cookies), which is fine for a personal tool but worth a clear warning.
-let SESSION_SECRET = process.env.LINDA_CONSOLE_SECRET;
+let SESSION_SECRET = process.env.LIBERTA_CONSOLE_SECRET;
 if (!SESSION_SECRET || SESSION_SECRET.length === 0) {
   SESSION_SECRET = crypto.randomBytes(32).toString("hex");
   process.stderr.write(
-    "WARNING: LINDA_CONSOLE_SECRET is not set. Generated a random " +
+    "WARNING: LIBERTA_CONSOLE_SECRET is not set. Generated a random " +
       "session secret at boot -- all sessions will be invalidated on the " +
-      "next restart. Set LINDA_CONSOLE_SECRET to a stable value to avoid " +
+      "next restart. Set LIBERTA_CONSOLE_SECRET to a stable value to avoid " +
       "this.\n"
   );
 }
 
-const LINDA_RUNS_DIR = path.join(os.homedir(), ".claude", "linda-runs");
+const LIBERTA_RUNS_DIR = path.join(os.homedir(), ".claude", "liberta-runs");
 const SESSION_ID_PATTERN = /^[a-zA-Z0-9_.-]+$/;
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 4177;
@@ -168,7 +168,7 @@ function renderLoginPage({ error } = {}) {
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Linda Console - Login</title>
+<title>Liberta Console - Login</title>
 <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
@@ -180,7 +180,7 @@ function renderLoginPage({ error } = {}) {
             <path d="M4 12L10 18L20 6" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
         </span>
-        <h1>Linda Console</h1>
+        <h1>Liberta Console</h1>
       </div>
       <form method="POST" action="/login">
         ${errorHtml}
@@ -262,7 +262,7 @@ app.post("/logout", async (req, res) => {
 // ---------------------------------------------------------------------
 // GitHub OAuth login
 // ---------------------------------------------------------------------
-const OAUTH_STATE_COOKIE = "linda_oauth_state";
+const OAUTH_STATE_COOKIE = "liberta_oauth_state";
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000; // 10 minutes, plenty for a login round-trip
 
 app.get("/auth/github", (req, res) => {
@@ -363,7 +363,7 @@ function readJsonSafe(filePath) {
 }
 
 function readIndex() {
-  const idx = readJsonSafe(path.join(LINDA_RUNS_DIR, "index.json"));
+  const idx = readJsonSafe(path.join(LIBERTA_RUNS_DIR, "index.json"));
   if (!idx || !Array.isArray(idx.sessions)) {
     return { active_session_id: null, sessions: [] };
   }
@@ -371,15 +371,15 @@ function readIndex() {
 }
 
 function sessionDir(id) {
-  return path.join(LINDA_RUNS_DIR, id);
+  return path.join(LIBERTA_RUNS_DIR, id);
 }
 
 // Defense in depth on top of the regex allowlist check callers already do:
-// confirm the resolved path is actually still inside LINDA_RUNS_DIR before
+// confirm the resolved path is actually still inside LIBERTA_RUNS_DIR before
 // touching the filesystem with it.
 function isPathInsideRunsDir(p) {
   const resolved = path.resolve(p);
-  const base = path.resolve(LINDA_RUNS_DIR) + path.sep;
+  const base = path.resolve(LIBERTA_RUNS_DIR) + path.sep;
   return resolved.startsWith(base);
 }
 
@@ -549,7 +549,7 @@ async function readSessionFromDisk(id, dir) {
 // Skills library + per-run overrides.
 //
 // This is a console-app-only management/staging layer over the harness's
-// own on-disk skill files (skills/linda/SKILL.md, agents/*.md). Editing a
+// own on-disk skill files (skills/liberta/SKILL.md, agents/*.md). Editing a
 // skill here (library or per-run override) NEVER writes back to disk and
 // NEVER changes what the actual harness controller/subagents execute --
 // see console/README.md's "Skills" section for the full explanation.
@@ -805,11 +805,11 @@ async function main() {
   await seedSkillsFromDisk();
   startSyncLoop();
   app.listen(PORT, () => {
-    process.stdout.write(`linda-console listening on http://localhost:${PORT}\n`);
+    process.stdout.write(`liberta-console listening on http://localhost:${PORT}\n`);
   });
 }
 
 main().catch((err) => {
-  process.stderr.write(`FATAL: failed to start linda-console: ${err.stack || err}\n`);
+  process.stderr.write(`FATAL: failed to start liberta-console: ${err.stack || err}\n`);
   process.exit(1);
 });

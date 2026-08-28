@@ -1,5 +1,5 @@
 ---
-name: linda
+name: liberta
 description: Unattended long-running orchestration harness. Give it a goal and a project and it plans, dispatches fresh-context specialist subagents, independently verifies each result, and stops-and-notifies on a clear terminal condition. Pair with /loop for hands-free operation.
 argument-hint: "<goal text> [--project <path>] [--profile dev|research] | --resume <session-id>"
 allowed-tools:
@@ -32,8 +32,8 @@ All bookkeeping lives outside the target project, under a global directory
 that is never committed:
 
 ```
-~/.claude/linda-runs/index.json           {active_session_id, sessions:[{id, project_path, status}]}
-~/.claude/linda-runs/<session-id>/
+~/.claude/liberta-runs/index.json           {active_session_id, sessions:[{id, project_path, status}]}
+~/.claude/liberta-runs/<session-id>/
     goal.md          the goal, acceptance criteria, profile, budget, git-flow policy
     project.json      detected stack + verify commands for the target repo
     plan.json         the task board: [{id, role, wave, depends_on, verify, status, ...}]
@@ -55,7 +55,7 @@ below, via the helper script — never write the file by hand, and never let
 a logging failure block the loop (log the failure once and move on):
 
 ```
-node ~/.claude/linda-runs/_log-event.mjs <session-id> <type> <from> <to> "<summary>" [--task <id>] [--wave <n>] [--status <run-status>]
+node ~/.claude/liberta-runs/_log-event.mjs <session-id> <type> <from> <to> "<summary>" [--task <id>] [--wave <n>] [--status <run-status>]
 ```
 
 Log at: session creation, plan written, task picked, subagent dispatched,
@@ -90,7 +90,7 @@ status change so those two files never drift apart.
    budget (`max_iterations`, `max_tokens`, `wall_deadline`), `allow_deploy`
    (default false), and any git-flow policy named in the goal text
    (`base_branch`, `stop_after`, `merge_policy` — see "Git-flow" below).
-5. `Task(linda-planner)` to turn the goal into `plan.json`: a flat list of
+5. `Task(liberta-planner)` to turn the goal into `plan.json`: a flat list of
    tasks, each with a `role` (see roster below), a `wave` number for
    ordering, `depends_on` for same-wave ordering, and a concrete `verify`
    step. Every task starts `status:"pending"`. For a research profile, the
@@ -99,17 +99,17 @@ status change so those two files never drift apart.
 6. Write `state.json` (`iteration:0`, the budget copied from `goal.md`,
    `status:"running"`) and register the session in `index.json`.
 7. If `base_branch` is set, branch: `git -C <root> checkout -b
-   linda/<session-id> <base_branch>`. All work lands here, never directly on
-   `base_branch`. First commit: `linda: scaffold <session-id>` (skip if
+   liberta/<session-id> <base_branch>`. All work lands here, never directly on
+   `base_branch`. First commit: `liberta: scaffold <session-id>` (skip if
    there's no repo).
 8. Fall through to LOOP.
 
 ### LOOP (one wake = advance the current wave)
 
 **0. Drain the inbox first**, before even the budget check —
-`node ~/.claude/linda-runs/_mailbox.mjs list <session-id>`. Empty is normal.
+`node ~/.claude/liberta-runs/_mailbox.mjs list <session-id>`. Empty is normal.
 Otherwise, per message:
-   - `steer`: fold it into this wake. Re-plan via `Task(linda-planner)` if
+   - `steer`: fold it into this wake. Re-plan via `Task(liberta-planner)` if
      it changes the task board; update `goal.md` if it names a policy field.
      A stop/pause request gets replied to, then `status:"checkpoint"` and go
      to TERMINAL. A steer never weakens a gate, deletes a task, or reverses
@@ -118,7 +118,7 @@ Otherwise, per message:
      just to answer one).
    - `info`: note it in `state.json` and acknowledge.
    Reply and archive in one call:
-   `node ~/.claude/linda-runs/_mailbox.mjs reply <session-id> <file> --text "<answer>"`.
+   `node ~/.claude/liberta-runs/_mailbox.mjs reply <session-id> <file> --text "<answer>"`.
    Never delete or move an inbox file by hand — a message that reappears
    next wake means a reply crashed mid-drain; handling it again is safe.
 
@@ -133,7 +133,7 @@ Research profile and converged (below) → `status:"converged"`.
 **3. Pick the current wave.** The lowest-numbered wave with incomplete
 tasks whose prior waves are already merged. Ensure its branch exists off
 `base_branch` (create once). If a task looks too large for one dispatch,
-`Task(linda-planner)` to split it, persist, re-pick.
+`Task(liberta-planner)` to split it, persist, re-pick.
 
 **4. Run the wave.** `Workflow({scriptPath:
 "~/.claude/workflows/wave-exec.js", args:{session_id, wave}})`. It gives
@@ -161,14 +161,14 @@ task running on the generic builder because its role didn't resolve.
 
 | role | producer | for |
 |---|---|---|
-| `build` | `linda-builder` | general code, logic, APIs, tests, refactors |
-| `style` | `linda-stylist` | anything judged by look or feel in a browser — layout, responsiveness, theming, empty/loading states, accessibility, copy |
-| `analyze` | `linda-analyst` | data analysis, modeling, backtests, statistics |
-| `scout` | `linda-scout` | gathering and citing external information |
-| `operate` | `linda-operator` | CI, infra, containers, deploys, migrations |
+| `build` | `liberta-builder` | general code, logic, APIs, tests, refactors |
+| `style` | `liberta-stylist` | anything judged by look or feel in a browser — layout, responsiveness, theming, empty/loading states, accessibility, copy |
+| `analyze` | `liberta-analyst` | data analysis, modeling, backtests, statistics |
+| `scout` | `liberta-scout` | gathering and citing external information |
+| `operate` | `liberta-operator` | CI, infra, containers, deploys, migrations |
 
 **5. Record the wave.** Merge each passed task's branch into the wave
-branch in dependency order (a conflict spawns a `linda-builder` to
+branch in dependency order (a conflict spawns a `liberta-builder` to
 reconcile against the updated branch). Per task: `done`+`passing:true`+
 evidence on a pass, else `attempts++` and `blocked`/`pending`. Add the
 workflow's token spend to `tokens_spent`; `iteration++`. If nothing new
@@ -176,15 +176,15 @@ passed this wave, `stuck_counter++`, else reset it to 0. Persist
 `state.json`.
 
 **6. Periodic tidy.** Every 5th iteration since the last one:
-`Task(linda-janitor)` on the wave branch to keep the tree merge-ready — no
+`Task(liberta-janitor)` on the wave branch to keep the tree merge-ready — no
 behavior change, just dead code, formatting, obvious dupes.
 
 **7. Wave PR, merge, checkpoint.** Once every task in the wave is done and
 verified: open a PR (`gh pr create --base <base_branch> --head
-<wave-branch>`, body from `Task(linda-chronicler)`). Then per
+<wave-branch>`, body from `Task(liberta-chronicler)`). Then per
 `goal.md.merge_policy`:
    - `auto_on_signoff`: get a final `Task(code-reviewer)` on the diff and
-     `Task(linda-qa)` on the wave. Both clean → `gh pr merge --squash
+     `Task(liberta-qa)` on the wave. Both clean → `gh pr merge --squash
      --delete-branch`, `PushNotification` the merge, advance the local
      `base_branch`, branch the next wave off it. Either withholds → leave
      the PR open, file the fixes as tasks, keep going (or stop-and-notify
@@ -194,13 +194,13 @@ verified: open a PR (`gh pr create --base <base_branch> --head
    go to TERMINAL.
 
 **8. Continue or stop.** Re-check the stop conditions. Terminal → TERMINAL.
-Otherwise, under `/loop`: `ScheduleWakeup` with `prompt:"/linda --resume
+Otherwise, under `/loop`: `ScheduleWakeup` with `prompt:"/liberta --resume
 <session-id>"` and a short reason. Supervised: report status, stop.
 
 ### TERMINAL
 
-1. `Task(linda-janitor)` for a final tidy.
-2. `Task(linda-chronicler)` to write the final report and update the
+1. `Task(liberta-janitor)` for a final tidy.
+2. `Task(liberta-chronicler)` to write the final report and update the
    project's own log, using the terminal `status`.
 3. `PushNotification` with the outcome ("done", "stuck on <task>", "budget
    exhausted", "converged: no defensible result", "awaiting deploy
@@ -230,13 +230,13 @@ session and wave, and:
   producers can never step on each other's edits (worktrees created up
   front, torn down at the end);
 - routes by `role` per the table above; an unrecognized role falls back to
-  `linda-builder` and is reported in `role_warnings` rather than silently
+  `liberta-builder` and is reported in `role_warnings` rather than silently
   passing;
 - for a `style` task (or any task whose verify kind is `visual`), requires
   screenshots at a wide and a narrow viewport plus a non-regressing
   accessibility score, from both the producer and the independent auditor
   — "could not render" is a failure, not a pass by default, and a `style`
-  task always gets a `linda-stylist` review even if the plan didn't ask for
+  task always gets a `liberta-stylist` review even if the plan didn't ask for
   one;
 - runs each producer on the task's assigned model tier and escalates one
   tier on a verify failure, retrying once before marking it blocked;
@@ -245,7 +245,7 @@ session and wave, and:
   still running; `depends_on` within the wave still holds a task until its
   prerequisite has merged;
 - merges passed branches into the wave branch one at a time, in dependency
-  order, spawning a `linda-builder` to resolve any conflict;
+  order, spawning a `liberta-builder` to resolve any conflict;
 - logs every dispatch and verdict via `_log-event.mjs`;
 - stays within the run's remaining token budget and returns total spend.
 
@@ -257,7 +257,7 @@ The controller records these and never re-runs an already-merged task.
 Read from `goal.md`:
 
 - `base_branch` — default the repo's mainline. The run branch
-  (`linda/<session-id>`) is cut from here at setup; nothing lands directly
+  (`liberta/<session-id>`) is cut from here at setup; nothing lands directly
   on it.
 - Tasks share a `wave` label from the planner. A finished, verified wave
   gets exactly one PR against `base_branch`.
@@ -267,7 +267,7 @@ Read from `goal.md`:
 - `merge_policy` — default `auto_on_signoff`. `none` leaves every PR for a
   human. `auto_on_signoff` requires green build/test (already required for
   any task to be done), a clean `code-reviewer` pass on the diff, and
-  `linda-qa` passing before it merges on its own — and this never overrides
+  `liberta-qa` passing before it merges on its own — and this never overrides
   the deploy guardrail (`allow_deploy` still gates anything irreversible).
 
 One target repository per run. A goal spanning multiple repos should be

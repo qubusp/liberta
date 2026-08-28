@@ -1,4 +1,4 @@
-# Linda
+# Liberta
 
 An unattended, long-running orchestration harness for Claude Code. Give it a
 goal and a project, and it keeps a thin controller loop alive on disk,
@@ -15,10 +15,10 @@ Long-horizon autonomous coding sessions fail in a small number of
 predictable ways: the agent tries to do everything in one giant turn, its
 context fills up and it loses the plot, it leaves work half-finished because
 nothing forces it to check, or it declares success without real evidence
-that anything passed. Linda's structure exists specifically to close off
+that anything passed. Liberta's structure exists specifically to close off
 each of those:
 
-- **One task, one fresh subagent.** The controller (`skills/linda`) never
+- **One task, one fresh subagent.** The controller (`skills/liberta`) never
   implements anything itself — it reads a task off a plan, hands it to the
   right specialist, and reads back a verdict. Context never accumulates
   past a thin bookkeeping layer.
@@ -37,7 +37,7 @@ each of those:
 ## Layout
 
 ```
-skills/linda/SKILL.md   the controller — a Claude Code skill, invoked as /linda "<goal>"
+skills/liberta/SKILL.md   the controller — a Claude Code skill, invoked as /liberta "<goal>"
 agents/*.md              the specialist roster (planner, builder, auditor, qa, ...)
 scripts/*.mjs            session-store helpers: event log, message inbox
 scripts/wave-exec.js     runs one wave of a plan's tasks concurrently, in isolated worktrees
@@ -47,16 +47,16 @@ console/                 a small authenticated web UI showing live session statu
 ## Installing the harness into Claude Code
 
 ```
-cp -r skills/linda   ~/.claude/skills/linda
+cp -r skills/liberta   ~/.claude/skills/liberta
 cp -r agents/*        ~/.claude/agents/
 ```
 
-Then from any Claude Code session: `/linda "<goal>" --project <path>`.
+Then from any Claude Code session: `/liberta "<goal>" --project <path>`.
 
 ## The console
 
 `console/` is a small Node/Express app that reads the session store
-(`~/.claude/linda-runs/`) and shows, live, which sessions exist, which one
+(`~/.claude/liberta-runs/`) and shows, live, which sessions exist, which one
 is active, its current task board, and a tail of its event stream — the
 "which session is working" view. It sits behind a login (see
 `console/README.md`) since the session store can contain repo paths, task
@@ -66,6 +66,6 @@ the URL.
 ```
 cd console
 npm install
-LINDA_CONSOLE_PASSWORD='pick something' npm start
+LIBERTA_CONSOLE_PASSWORD='pick something' npm start
 # → http://localhost:4177
 ```

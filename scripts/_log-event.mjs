@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Append one JSON line to a Linda session's events.jsonl.
+// Append one JSON line to a Liberta session's events.jsonl.
 // Usage: _log-event.mjs <session-id> <type> <from> <to> "<summary>"
 //        [--task <id>] [--wave <n>] [--status <run-status>]
 // If --status is given, also updates status in index.json and state.json
@@ -15,7 +15,7 @@ function fail(msg) {
 }
 
 function runsRoot() {
-  return path.join(os.homedir(), ".claude", "linda-runs");
+  return path.join(os.homedir(), ".claude", "liberta-runs");
 }
 
 function parseArgs(argv) {

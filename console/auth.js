@@ -11,7 +11,7 @@
 const crypto = require("crypto");
 
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
-const COOKIE_NAME = "linda_console_session";
+const COOKIE_NAME = "liberta_console_session";
 
 function base64url(buf) {
   return Buffer.from(buf)
@@ -127,7 +127,7 @@ function verifyOAuthSessionCookiePayload(cookieValue, secret) {
 }
 
 // Simple in-memory sliding-window rate limiter, keyed by IP.
-// This is safe *only* because linda-console runs as a single Node
+// This is safe *only* because liberta-console runs as a single Node
 // process with no clustering -- if this ever runs behind a multi-process
 // cluster or gets load-balanced across instances, this in-memory map
 // stops being a shared view and the effective limit becomes

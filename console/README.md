@@ -1,9 +1,9 @@
-# Linda Console
+# Liberta Console
 
-A small authenticated dashboard showing, at a glance, which Linda
+A small authenticated dashboard showing, at a glance, which Liberta
 orchestration session(s) exist, which one is active, its current task
 board, and a tail of its event log. The session store at
-`~/.claude/linda-runs/` remains the source of truth (the harness itself
+`~/.claude/liberta-runs/` remains the source of truth (the harness itself
 writes those files, unchanged) -- the console reads from a SQL
 database that mirrors it, kept in sync by a background loop. See
 "Database" below.
@@ -13,22 +13,22 @@ database that mirrors it, kept in sync by a background loop. See
 ```
 cd console
 npm install
-LINDA_CONSOLE_PASSWORD='pick something' npm start
+LIBERTA_CONSOLE_PASSWORD='pick something' npm start
 # → http://localhost:4177
 ```
 
 Override the port with `PORT`:
 
 ```
-PORT=8080 LINDA_CONSOLE_PASSWORD='...' npm start
+PORT=8080 LIBERTA_CONSOLE_PASSWORD='...' npm start
 ```
 
-Optionally set `LINDA_CONSOLE_SECRET` to a stable random string (used to
+Optionally set `LIBERTA_CONSOLE_SECRET` to a stable random string (used to
 sign session cookies). If it's left unset, the server generates a random
 secret at boot and warns about it -- every restart will then invalidate
 all existing login sessions, since the signing key changed.
 
-`LINDA_CONSOLE_PASSWORD` is required. The server refuses to start at all
+`LIBERTA_CONSOLE_PASSWORD` is required. The server refuses to start at all
 (fails loudly on boot, non-zero exit) if it's unset or empty -- there is
 no default password and no way to run this without one.
 
@@ -36,11 +36,11 @@ no default password and no way to run this without one.
 
 - Single-operator tool: one shared password, no username, no accounts.
 - Login (`POST /login`) compares the submitted password against
-  `LINDA_CONSOLE_PASSWORD` with `crypto.timingSafeEqual` (only ever called
+  `LIBERTA_CONSOLE_PASSWORD` with `crypto.timingSafeEqual` (only ever called
   on two equal-length buffers, to avoid it throwing on a length mismatch).
 - On success, issues a signed, `httpOnly`, `SameSite=Lax` cookie: a random
   session id + expiry, HMAC-SHA256'd with a server-side secret
-  (`LINDA_CONSOLE_SECRET`, or a random one generated at boot -- see
+  (`LIBERTA_CONSOLE_SECRET`, or a random one generated at boot -- see
   above). No session store on disk; the cookie itself carries everything
   needed to verify it, checked fresh on every request.
 - Sessions expire after 12 hours.
@@ -72,7 +72,7 @@ GitHub -> Settings -> Developer settings -> OAuth Apps -> New OAuth App.
 
 - **Homepage URL**: wherever this console is reachable, e.g.
   `http://localhost:4177`.
-- **Authorization callback URL**: must match `LINDA_OAUTH_CALLBACK_URL`
+- **Authorization callback URL**: must match `LIBERTA_OAUTH_CALLBACK_URL`
   below *exactly* (scheme, host, port, path) -- e.g.
   `http://localhost:4177/auth/github/callback`.
 
@@ -82,32 +82,32 @@ a **Client Secret**.
 ### 2. Set the env vars
 
 ```
-LINDA_OAUTH_GITHUB_CLIENT_ID='...'
-LINDA_OAUTH_GITHUB_CLIENT_SECRET='...'
-LINDA_OAUTH_CALLBACK_URL='http://localhost:4177/auth/github/callback'
-LINDA_ALLOWED_GITHUB_USERS='yourgithubusername,teammateusername'
+LIBERTA_OAUTH_GITHUB_CLIENT_ID='...'
+LIBERTA_OAUTH_GITHUB_CLIENT_SECRET='...'
+LIBERTA_OAUTH_CALLBACK_URL='http://localhost:4177/auth/github/callback'
+LIBERTA_ALLOWED_GITHUB_USERS='yourgithubusername,teammateusername'
 ```
 
 With all four set and `npm start` run, `/login` will show a "Log in with
 GitHub" button below the password form.
 
-`LINDA_ALLOWED_GITHUB_USERS` is a comma-separated allowlist of GitHub
+`LIBERTA_ALLOWED_GITHUB_USERS` is a comma-separated allowlist of GitHub
 usernames (case-insensitive). **It's required** the moment
-`LINDA_OAUTH_GITHUB_CLIENT_ID`/`_SECRET` are set -- if it's missing or
+`LIBERTA_OAUTH_GITHUB_CLIENT_ID`/`_SECRET` are set -- if it's missing or
 empty, the server fails loudly at boot and refuses to start, the same
 fail-closed pattern as the missing-password check. This exists because
 GitHub OAuth alone only proves "this is a real GitHub account," not "this
 account should have access to this console" -- without an allowlist,
 *any* GitHub user could complete the OAuth flow and get in.
 
-`LINDA_OAUTH_CALLBACK_URL` is similarly required once OAuth is enabled --
+`LIBERTA_OAUTH_CALLBACK_URL` is similarly required once OAuth is enabled --
 it's what's sent to GitHub's authorize endpoint and must exactly match
 what's registered on the OAuth App, or GitHub will refuse the redirect.
 
 ### How it interacts with the password login
 
 Both methods produce the exact same session cookie
-(`linda_console_session`) and are checked by the same auth middleware --
+(`liberta_console_session`) and are checked by the same auth middleware --
 whichever is present and valid wins. Password sessions are stateless (no
 DB row); GitHub sessions are backed by a row in the `web_sessions` table
 (so `/logout` can revoke one immediately, and so an expired/deleted row
@@ -123,9 +123,9 @@ database (via [Knex](https://knexjs.org)) instead of hitting the
 filesystem on every request. **This DB is a read cache, not the source
 of truth** -- it's populated and kept current by a background sync loop
 (`sync.js`, `startSyncLoop()`, runs every 3s) that reads
-`~/.claude/linda-runs/index.json` plus each session's `state.json`/
+`~/.claude/liberta-runs/index.json` plus each session's `state.json`/
 `plan.json`/`events.jsonl` and upserts into the `runs`/`tasks`/`events`
-tables. The harness itself (the `linda` skill's controller,
+tables. The harness itself (the `liberta` skill's controller,
 `scripts/wave-exec.js`, etc.) still writes those files directly and is
 completely unaware the DB exists. If a run was just created and the
 sync loop hasn't caught up to it yet, `GET /api/sessions/:id` falls
@@ -133,7 +133,7 @@ back to reading the files directly for that one request.
 
 Two supported backends, picked via `DB_CLIENT`:
 
-- **`sqlite3`** (default) -- a local file at `console/data/linda.sqlite`
+- **`sqlite3`** (default) -- a local file at `console/data/liberta.sqlite`
   (the `data/` directory is created automatically on first boot if
   missing, and is gitignored -- the DB file itself is never committed).
   Nothing else to configure.
@@ -145,7 +145,7 @@ Two supported backends, picked via `DB_CLIENT`:
   silently falling back to sqlite or starting half-configured.
 
 ```
-DB_CLIENT=pg DATABASE_URL='postgres://user:pass@host:5432/linda' LINDA_CONSOLE_PASSWORD='...' npm start
+DB_CLIENT=pg DATABASE_URL='postgres://user:pass@host:5432/liberta' LIBERTA_CONSOLE_PASSWORD='...' npm start
 ```
 
 The `users`/`web_sessions` tables also exist in the schema (created by
@@ -156,13 +156,13 @@ top of.
 ## Skills
 
 The console has a second, DB-managed "skills library" separate from the
-on-disk harness files (`skills/linda/SKILL.md`, `agents/*.md`) -- it's a
+on-disk harness files (`skills/liberta/SKILL.md`, `agents/*.md`) -- it's a
 staging/reference/override layer for the console UI only, and it never
 changes what the actual harness controller or subagents execute.
 Concretely:
 
 - **Library.** On first boot, if the `skills` table is empty, it's
-  seeded once from `skills/linda/SKILL.md` (as the `linda` controller)
+  seeded once from `skills/liberta/SKILL.md` (as the `liberta` controller)
   and every `agents/*.md` file (one row per agent). This only happens
   once -- once the table has rows, restarts never re-seed it, so any
   hand-edits made later through the UI (`GET/PUT/POST/DELETE

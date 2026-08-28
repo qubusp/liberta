@@ -1,7 +1,7 @@
 {
-  "name": "linda-console",
+  "name": "liberta-console",
   "version": "1.0.0",
-  "description": "Authenticated dashboard showing which Linda orchestration session is working right now.",
+  "description": "Authenticated dashboard showing which Liberta orchestration session is working right now.",
   "private": true,
   "main": "server.js",
   "scripts": {

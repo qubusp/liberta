@@ -1,8 +1,8 @@
 "use strict";
 
 // ---------------------------------------------------------------------
-// Background sync loop: mirrors the file-based Linda run store
-// (~/.claude/linda-runs/) into the DB (db.js's knex instance) so the
+// Background sync loop: mirrors the file-based Liberta run store
+// (~/.claude/liberta-runs/) into the DB (db.js's knex instance) so the
 // console can serve requests from a fast queryable cache instead of
 // hitting the filesystem on every request. The file store remains the
 // source of truth -- this module only ever reads those files, never
@@ -15,7 +15,7 @@ const os = require("os");
 
 const { knex } = require("./db");
 
-const LINDA_RUNS_DIR = path.join(os.homedir(), ".claude", "linda-runs");
+const LIBERTA_RUNS_DIR = path.join(os.homedir(), ".claude", "liberta-runs");
 
 // run_id -> last byte offset already ingested from that run's
 // events.jsonl. In-memory only -- a process restart just re-scans from
@@ -182,7 +182,7 @@ async function syncEvents(runId, eventsPath) {
 
 async function syncOneRun(session) {
   const runId = session.id;
-  const dir = path.join(LINDA_RUNS_DIR, runId);
+  const dir = path.join(LIBERTA_RUNS_DIR, runId);
   if (!fs.existsSync(dir)) {
     warnOnce(runId, `run directory missing for "${runId}", skipping this pass`);
     return;
@@ -201,7 +201,7 @@ async function syncOneRun(session) {
 }
 
 async function runSyncOnce() {
-  const idx = readJsonSafe(path.join(LINDA_RUNS_DIR, "index.json"));
+  const idx = readJsonSafe(path.join(LIBERTA_RUNS_DIR, "index.json"));
   if (!idx || !Array.isArray(idx.sessions)) {
     return;
   }

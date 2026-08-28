@@ -19,16 +19,16 @@ const GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize";
 const GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token";
 const GITHUB_USER_URL = "https://api.github.com/user";
 
-const CLIENT_ID = process.env.LINDA_OAUTH_GITHUB_CLIENT_ID;
-const CLIENT_SECRET = process.env.LINDA_OAUTH_GITHUB_CLIENT_SECRET;
-const CALLBACK_URL = process.env.LINDA_OAUTH_CALLBACK_URL;
-const ALLOWED_USERS_RAW = process.env.LINDA_ALLOWED_GITHUB_USERS;
+const CLIENT_ID = process.env.LIBERTA_OAUTH_GITHUB_CLIENT_ID;
+const CLIENT_SECRET = process.env.LIBERTA_OAUTH_GITHUB_CLIENT_SECRET;
+const CALLBACK_URL = process.env.LIBERTA_OAUTH_CALLBACK_URL;
+const ALLOWED_USERS_RAW = process.env.LIBERTA_ALLOWED_GITHUB_USERS;
 
 const OAUTH_CONFIGURED = !!(CLIENT_ID && CLIENT_ID.length > 0 && CLIENT_SECRET && CLIENT_SECRET.length > 0);
 
 // ---------------------------------------------------------------------
 // Fail-closed check, run at module-load time (i.e. at server boot, same
-// timing as the existing LINDA_CONSOLE_PASSWORD/DB_CLIENT checks in
+// timing as the existing LIBERTA_CONSOLE_PASSWORD/DB_CLIENT checks in
 // server.js/db.js): if OAuth credentials are configured but no allowlist
 // is given, refuse to start rather than silently let any GitHub account
 // in. This mirrors the "never fall back to a permissive default" rule
@@ -42,10 +42,10 @@ if (OAUTH_CONFIGURED) {
     .filter((s) => s.length > 0);
   if (parsed.length === 0) {
     process.stderr.write(
-      "FATAL: LINDA_OAUTH_GITHUB_CLIENT_ID/_SECRET are set but " +
-        "LINDA_ALLOWED_GITHUB_USERS is empty or unset. Refusing to start " +
+      "FATAL: LIBERTA_OAUTH_GITHUB_CLIENT_ID/_SECRET are set but " +
+        "LIBERTA_ALLOWED_GITHUB_USERS is empty or unset. Refusing to start " +
         "with GitHub OAuth enabled and no allowlist -- that would let any " +
-        "GitHub account log in. Set LINDA_ALLOWED_GITHUB_USERS to a " +
+        "GitHub account log in. Set LIBERTA_ALLOWED_GITHUB_USERS to a " +
         "comma-separated list of allowed GitHub usernames and try again.\n"
     );
     process.exit(1);
@@ -53,8 +53,8 @@ if (OAUTH_CONFIGURED) {
   ALLOWED_USERS = new Set(parsed);
   if (!CALLBACK_URL || CALLBACK_URL.length === 0) {
     process.stderr.write(
-      "FATAL: LINDA_OAUTH_GITHUB_CLIENT_ID/_SECRET are set but " +
-        "LINDA_OAUTH_CALLBACK_URL is empty or unset. Set it to the exact " +
+      "FATAL: LIBERTA_OAUTH_GITHUB_CLIENT_ID/_SECRET are set but " +
+        "LIBERTA_OAUTH_CALLBACK_URL is empty or unset. Set it to the exact " +
         "callback URL registered on the GitHub OAuth App (e.g. " +
         "http://localhost:4177/auth/github/callback) and try again.\n"
     );
@@ -131,7 +131,7 @@ async function handleCallback(code) {
       headers: {
         Authorization: `Bearer ${tokenJson.access_token}`,
         Accept: "application/vnd.github+json",
-        "User-Agent": "linda-console",
+        "User-Agent": "liberta-console",
       },
     });
     if (!profileRes.ok) {

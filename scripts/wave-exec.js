@@ -1,16 +1,16 @@
 #!/usr/bin/env node
-// Linda wave-execution dispatch-plan generator + recorder.
+// Liberta wave-execution dispatch-plan generator + recorder.
 //
 // This script never spawns a subagent itself (only the calling Claude Code
 // controller session can do that via its own Task tool) -- it is a planning
 // / bookkeeping helper with three modes, all keyed on a session id and a
-// wave number read from ~/.claude/linda-runs/<session-id>/{plan.json,
+// wave number read from ~/.claude/liberta-runs/<session-id>/{plan.json,
 // project.json,goal.md}:
 //
 //   1. GENERATE (default):
 //        node wave-exec.js <session-id> <wave> [--token-budget <n>]
 //      Selects every plan.json task whose wave matches, creates one git
-//      worktree per task off the wave branch (linda/<session-id>-wave<n>,
+//      worktree per task off the wave branch (liberta/<session-id>-wave<n>,
 //      cut from goal.md's base_branch if it doesn't exist yet), routes each
 //      task's role to a producer, and writes
 //      waves/<n>/dispatch-plan.json -- the work queue the controller then
@@ -26,7 +26,7 @@
 //      dependency order (unless --merged says the controller already did
 //      it), and adds to the wave's running token-spend total. On a merge
 //      conflict, leaves the conflict markers in place, does not abort, and
-//      exits non-zero telling the controller to spawn a linda-builder to
+//      exits non-zero telling the controller to spawn a liberta-builder to
 //      reconcile.
 //
 //   3. SUMMARY (once every dispatched task has a recorded result):
@@ -49,7 +49,7 @@ function fail(msg) {
 }
 
 function runsRoot() {
-  return path.join(os.homedir(), ".claude", "linda-runs");
+  return path.join(os.homedir(), ".claude", "liberta-runs");
 }
 
 function sessionDir(sessionId) {
@@ -115,17 +115,17 @@ function log(sessionId, type, from, to, summary, extra) {
 // --- role routing -----------------------------------------------------
 
 const ROLE_TABLE = {
-  build: "linda-builder",
-  style: "linda-stylist",
-  analyze: "linda-analyst",
-  scout: "linda-scout",
-  operate: "linda-operator",
+  build: "liberta-builder",
+  style: "liberta-stylist",
+  analyze: "liberta-analyst",
+  scout: "liberta-scout",
+  operate: "liberta-operator",
 };
 
 function normalizeRole(raw) {
   if (!raw) return "";
   let r = String(raw).trim().toLowerCase();
-  r = r.replace(/^linda[-_]/, "");
+  r = r.replace(/^liberta[-_]/, "");
   r = r.replace(/[-\s]+/g, "_");
   return r;
 }
@@ -133,7 +133,7 @@ function normalizeRole(raw) {
 function resolveProducer(rawRole) {
   const norm = normalizeRole(rawRole);
   if (ROLE_TABLE[norm]) return { role: norm, producer: ROLE_TABLE[norm], warned: false };
-  return { role: norm || rawRole, producer: "linda-builder", warned: true };
+  return { role: norm || rawRole, producer: "liberta-builder", warned: true };
 }
 
 // --- git helpers --------------------------------------------------------
@@ -311,7 +311,7 @@ function modeGenerate(sessionId, wave, opts) {
     }
   }
 
-  const waveBranch = `linda/${sessionId}-wave${wave}`;
+  const waveBranch = `liberta/${sessionId}-wave${wave}`;
   const baseBranch = goal.base_branch || currentBranch(gitRoot);
   ensureWaveBranch(gitRoot, waveBranch, baseBranch);
 
@@ -409,7 +409,7 @@ function modeRecord(sessionId, wave, taskId, opts, flags) {
   const wdir = waveDir(sessionId, wave);
   const dispatchPlan = readJson(path.join(wdir, "dispatch-plan.json"), null);
   const dpEntry = dispatchPlan && dispatchPlan.tasks.find((e) => String(e.task_id) === String(taskId));
-  const waveBranch = (dispatchPlan && dispatchPlan.wave_branch) || `linda/${sessionId}-wave${wave}`;
+  const waveBranch = (dispatchPlan && dispatchPlan.wave_branch) || `liberta/${sessionId}-wave${wave}`;
   const taskBranch = (dpEntry && dpEntry.branch) || `${waveBranch}-task-${taskId}`;
 
   const state = loadWaveState(sessionId, wave);
@@ -450,7 +450,7 @@ function modeRecord(sessionId, wave, taskId, opts, flags) {
           fail(
             `merge conflict merging ${taskBranch} into ${waveBranch}: ${err.message}\n` +
               `Conflict markers left in place in ${gitRoot} (branch ${waveBranch}). ` +
-              `Spawn a linda-builder to reconcile, then re-run --record with --merged.`
+              `Spawn a liberta-builder to reconcile, then re-run --record with --merged.`
           );
         }
       }
@@ -495,7 +495,7 @@ function mergeTaskBranch(gitRoot, waveBranch, taskBranch) {
   // branch, so this never disturbs whatever the caller's cwd/HEAD is.
   const mergeWt = path.join(
     os.tmpdir(),
-    `linda-wave-merge-${path.basename(gitRoot)}-${waveBranch.replace(/[/\\]/g, "_")}`
+    `liberta-wave-merge-${path.basename(gitRoot)}-${waveBranch.replace(/[/\\]/g, "_")}`
   );
   if (fs.existsSync(mergeWt)) {
     try {
@@ -512,7 +512,7 @@ function mergeTaskBranch(gitRoot, waveBranch, taskBranch) {
   } catch (err) {
     // Leave conflict markers in place -- do not abort. Re-throw so the
     // caller can report and exit non-zero; the worktree with the conflict
-    // stays on disk at mergeWt for a linda-builder to reconcile.
+    // stays on disk at mergeWt for a liberta-builder to reconcile.
     throw err;
   } finally {
     if (!hasConflict(mergeWt)) {

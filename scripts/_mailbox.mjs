@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Linda session inbox helper.
+// Liberta session inbox helper.
 // Usage:
 //   _mailbox.mjs list <session-id>
 //   _mailbox.mjs reply <session-id> <filename> --text "<reply text>"
@@ -19,7 +19,7 @@ function fail(msg) {
 }
 
 function runsRoot() {
-  return path.join(os.homedir(), ".claude", "linda-runs");
+  return path.join(os.homedir(), ".claude", "liberta-runs");
 }
 
 function inboxDir(sessionId) {
