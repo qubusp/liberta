@@ -64,7 +64,10 @@ function readJson(filePath, fallback) {
 function writeJsonAtomic(filePath, obj) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + "\n");
+  // Message files carry operator-authored steer/question text: keep them
+  // readable/writable by the owner only (not group/world), overriding the
+  // process umask.
+  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + "\n", { mode: 0o600 });
   fs.renameSync(tmp, filePath);
 }
 

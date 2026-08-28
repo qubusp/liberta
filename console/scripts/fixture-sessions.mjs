@@ -19,6 +19,12 @@
 // under liberta-runs/ is ever read for the purpose of deleting it, and
 // no non-fixture index.json entry is ever modified or reordered.
 //
+// SAFETY (index.json): an index that is present but unreadable/unparseable
+// is NEVER written over -- both commands abort with a non-zero exit and
+// tell the operator to fix or restore it. Only a genuinely ABSENT index is
+// treated as empty. All index writes go through a temp file + rename so a
+// concurrent reader can never observe a truncated registry.
+//
 // Usage:
 //   node console/scripts/fixture-sessions.mjs create
 //   node console/scripts/fixture-sessions.mjs clean
@@ -49,10 +55,29 @@ function isFixtureId(id) {
   return typeof id === "string" && id.startsWith(FIXTURE_PREFIX);
 }
 
+// Reject any id containing a path separator, or the substring `..`
+// anywhere in it. This must run BEFORE the prefix check: an id like
+// `zz-fixture-../real-session` passes startsWith(FIXTURE_PREFIX) but
+// normalises to a path outside the intended fixture directory, so the
+// prefix check alone is not enough. Checking for the raw substring `..`
+// (rather than only a whole `..` path segment) is deliberately
+// conservative: it also refuses ids like `zz-fixture-..`, which do not
+// normalise anywhere outside RUNS_DIR today but are needlessly
+// suspicious for a directory name that is only ever one of four
+// hardcoded fixture ids.
+function hasPathEscape(id) {
+  if (typeof id !== "string") return true;
+  if (id.includes("/") || id.includes("\\")) return true;
+  return id.includes("..");
+}
+
 // Defense in depth: never resolve a path outside RUNS_DIR, and never act
 // on a directory name that isn't the fixture prefix, no matter what
 // callers pass in.
 function fixtureDir(id) {
+  if (hasPathEscape(id)) {
+    throw new Error(`refusing to touch id containing a path separator or ".." segment: "${id}"`);
+  }
   if (!isFixtureId(id)) {
     throw new Error(`refusing to touch non-fixture id "${id}"`);
   }
@@ -65,19 +90,85 @@ function fixtureDir(id) {
   return resolved;
 }
 
-async function readIndexSafe() {
-  try {
-    const raw = await fs.readFile(INDEX_PATH, "utf8");
-    const parsed = JSON.parse(raw);
-    if (parsed && Array.isArray(parsed.sessions)) return parsed;
-  } catch (err) {
-    // fall through to empty default below
+// A refusal to proceed because the on-disk index could not be trusted.
+// Distinct from a programming error so main() can print operator-facing
+// recovery instructions rather than a bare stack-ish message.
+class CorruptIndexError extends Error {
+  constructor(reason) {
+    super(
+      `refusing to touch ${INDEX_PATH}: ${reason}.\n` +
+        "  This file is the LIVE session registry for every Liberta run.\n" +
+        "  Writing over it would silently unregister every real session.\n" +
+        "  Fix or restore index.json by hand, then re-run this command."
+    );
+    this.name = "CorruptIndexError";
   }
-  return { active_session_id: null, sessions: [] };
 }
 
+// Read the index, distinguishing the two cases that used to be conflated:
+//
+//   ABSENT  -> nothing to lose; start from an empty index (safe to write).
+//   PRESENT BUT UNREADABLE/UNPARSEABLE -> a truncated, half-written or
+//     hand-mangled registry. NEVER write in this case; a failed read must
+//     never be laundered into an empty index that then gets persisted over
+//     real data. Abort loudly instead.
+async function readIndexOrThrow() {
+  let raw;
+  try {
+    raw = await fs.readFile(INDEX_PATH, "utf8");
+  } catch (err) {
+    if (err && err.code === "ENOENT") {
+      // Genuinely absent: an empty index is the correct starting point.
+      return { active_session_id: null, sessions: [] };
+    }
+    // Present but unreadable (EACCES, EISDIR, EIO, ...) -- do not guess.
+    throw new CorruptIndexError(`could not read it (${err && err.code ? err.code : err})`);
+  }
+  // An existing-but-empty file is the classic mid-write truncation, not an
+  // absent index. Refuse rather than assume the registry was empty.
+  if (!raw.trim()) {
+    throw new CorruptIndexError("the file exists but is empty (truncated mid-write?)");
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new CorruptIndexError(`it is not valid JSON (${err.message})`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || !Array.isArray(parsed.sessions)) {
+    throw new CorruptIndexError('it does not have the expected shape ({ active_session_id, sessions: [] })');
+  }
+  // Per-entry validation: every element of `sessions` must be an object
+  // with a string `id`, or we cannot safely distinguish a fixture entry
+  // from a non-fixture one (isFixtureId would silently treat a malformed
+  // entry as non-fixture, but a corrupt registry should abort loudly
+  // rather than be guessed at). Well-formed-but-unknown entries are still
+  // preserved verbatim elsewhere in this file -- this only rejects
+  // malformed elements.
+  for (const entry of parsed.sessions) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry) || typeof entry.id !== "string") {
+      throw new CorruptIndexError(
+        "the \"sessions\" array contains an entry that is not an object with a string \"id\""
+      );
+    }
+  }
+  return parsed;
+}
+
+// Atomic: write a temp file in the same directory, then rename over the
+// target. rename(2) is atomic within a filesystem, so a concurrent reader
+// (e.g. the controller's scripts/_log-event.mjs) sees either the old index
+// or the new one -- never a truncated one. Matches the writeJsonAtomic
+// helper in scripts/_log-event.mjs and console/scripts/backfill-parents.mjs.
 async function writeIndex(idx) {
-  await fs.writeFile(INDEX_PATH, JSON.stringify(idx, null, 2) + "\n", "utf8");
+  const tmp = `${INDEX_PATH}.tmp-${process.pid}-${Date.now()}`;
+  await fs.writeFile(tmp, JSON.stringify(idx, null, 2) + "\n", "utf8");
+  try {
+    await fs.rename(tmp, INDEX_PATH);
+  } catch (err) {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  }
 }
 
 function samplePlan(status) {
@@ -188,11 +279,14 @@ async function removeOne(id) {
 async function create() {
   await fs.mkdir(RUNS_DIR, { recursive: true });
 
+  // Validate the index BEFORE writing any fixture directories, so a corrupt
+  // index aborts without leaving half-created fixtures behind.
+  const idx = await readIndexOrThrow();
+
   for (const fixture of FIXTURES) {
     await createOne(fixture);
   }
 
-  const idx = await readIndexSafe();
   // Idempotent: drop any pre-existing fixture entries before re-adding,
   // never touch non-fixture entries.
   const nonFixtureSessions = idx.sessions.filter((s) => !isFixtureId(s && s.id));
@@ -210,6 +304,11 @@ async function create() {
 }
 
 async function clean() {
+  // Validate the index BEFORE removing anything. If it is corrupt we abort
+  // without having touched a single directory, so the store is left exactly
+  // as we found it.
+  const idx = await readIndexOrThrow();
+
   // Remove fixture directories: enumerate RUNS_DIR ourselves and only
   // ever act on entries whose name starts with FIXTURE_PREFIX -- never
   // trust FIXTURES alone in case a stale fixture from an older version
@@ -226,7 +325,6 @@ async function clean() {
     await removeOne(entry.name);
   }
 
-  const idx = await readIndexSafe();
   const before = idx.sessions.length;
   idx.sessions = idx.sessions.filter((s) => !isFixtureId(s && s.id));
   const removed = before - idx.sessions.length;
@@ -235,6 +333,8 @@ async function clean() {
   if (isFixtureId(idx.active_session_id)) {
     idx.active_session_id = null;
   }
+  // Only rewrite when there is something to change, or when a valid index
+  // already exists on disk. Never create an index that was absent.
   if (removed > 0 || fssync.existsSync(INDEX_PATH)) {
     await writeIndex(idx);
   }
@@ -255,6 +355,10 @@ async function main() {
 }
 
 main().catch((err) => {
+  if (err instanceof CorruptIndexError) {
+    process.stderr.write(`ABORTED: ${err.message}\n`);
+    process.exit(1);
+  }
   process.stderr.write(`FATAL: ${err.message || err}\n`);
   process.exit(1);
 });
