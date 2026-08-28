@@ -32,12 +32,12 @@ All bookkeeping lives outside the target project, under a global directory
 that is never committed:
 
 ```
-~/.claude/liberta-runs/index.json           {active_session_id, sessions:[{id, project_path, status}]}
+~/.claude/liberta-runs/index.json           {active_session_id, sessions:[{id, project_path, status, parent_session_id}]}
 ~/.claude/liberta-runs/<session-id>/
     goal.md          the goal, acceptance criteria, profile, budget, git-flow policy
     project.json      detected stack + verify commands for the target repo
     plan.json         the task board: [{id, role, wave, depends_on, verify, status, ...}]
-    state.json        {iteration, tokens_spent, wall_deadline, status, stuck_counter, notes}
+    state.json        {iteration, tokens_spent, wall_deadline, status, stuck_counter, notes, parent_session_id}
     ledger.csv        one row per completed task: id, role, model, outcome, tokens
     events.jsonl       append-only activity stream (see below)
     inbox/             steer/question/info messages dropped in from outside the run
@@ -97,7 +97,14 @@ status change so those two files never drift apart.
    planner also writes the pre-registration (null hypothesis, holdout
    split, stopping rule) before any out-of-sample work happens.
 6. Write `state.json` (`iteration:0`, the budget copied from `goal.md`,
-   `status:"running"`) and register the session in `index.json`.
+   `status:"running"`) and register the session in `index.json`. Both files
+   must carry `parent_session_id`, and they must agree: `null` when this is
+   a fresh root run, or the mother run's session id when this session is a
+   fork/continuation of an existing one. `state.json` is authoritative and
+   the `index.json` entry is the convenience copy. Always set it at
+   creation time — a missing field reads as `null` (a root), so lineage
+   that is never written is lineage that is silently wrong. Never rely on
+   a later backfill to repair it.
 7. If `base_branch` is set, branch: `git -C <root> checkout -b
    liberta/<session-id> <base_branch>`. All work lands here, never directly on
    `base_branch`. First commit: `liberta: scaffold <session-id>` (skip if

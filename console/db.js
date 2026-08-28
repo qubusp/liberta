@@ -60,8 +60,23 @@ async function ensureSchema() {
       t.text("id").primary();
       t.text("project_path");
       t.text("status");
+      t.text("parent_session_id");
       t.integer("active").defaultTo(0);
       t.timestamp("updated_at");
+    });
+  }
+
+  // Explicit additive migration for `runs.parent_session_id`. The
+  // createTable block above only runs when the table does NOT exist, so a
+  // column added there alone would never land on an already-existing
+  // console/data/liberta.sqlite (or an existing Postgres database). This
+  // check is idempotent and works on both sqlite3 and pg.
+  if (
+    (await knex.schema.hasTable("runs")) &&
+    !(await knex.schema.hasColumn("runs", "parent_session_id"))
+  ) {
+    await knex.schema.alterTable("runs", (t) => {
+      t.text("parent_session_id");
     });
   }
 
