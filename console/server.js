@@ -56,6 +56,13 @@ const LIBERTA_RUNS_DIR = path.join(os.homedir(), ".claude", "liberta-runs");
 const SESSION_ID_PATTERN = /^[a-zA-Z0-9_.-]+$/;
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 4177;
+// Bind address. Default stays "0.0.0.0" -- an operator may well reach this
+// console from another device on their own network, and silently moving it
+// to loopback would break that. The point of the env var is only to make
+// loopback EXPRESSIBLE, so an ephemeral child console (console/scripts/
+// shot.mjs starts one per screenshot run) can opt into 127.0.0.1 and not
+// sit on every interface for the length of the run.
+const HOST = process.env.LIBERTA_CONSOLE_HOST || "0.0.0.0";
 
 const app = express();
 app.use(express.urlencoded({ extended: false }));
@@ -1293,7 +1300,11 @@ async function main() {
   await ensureSchema();
   await seedSkillsFromDisk();
   startSyncLoop();
-  app.listen(PORT, () => {
+  // NOTE: the wording/format of the line below is a contract --
+  // console/scripts/shot.mjs matches "listening on http://localhost:<port>"
+  // on the child's stdout to prove the console it screenshots is the one it
+  // started. Don't reword it (the bind host deliberately isn't in it).
+  app.listen(PORT, HOST, () => {
     process.stdout.write(`liberta-console listening on http://localhost:${PORT}\n`);
   });
 }
