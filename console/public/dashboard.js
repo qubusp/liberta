@@ -89,7 +89,7 @@
     // Same purely-decorative hook for the detail header (t6). The title
     // text is unchanged, so the heading's accessible name is unaffected.
     detailTitle.dataset.status = statusSlug(
-      data.status != null ? data.status : sessionStatusById.get(data.id)
+      data.state?.status != null ? data.state.status : sessionStatusById.get(data.id)
     );
 
     tasksBody.innerHTML = "";
@@ -131,6 +131,15 @@
   async function selectSession(id) {
     if (id !== selectedSessionId) {
       lastRenderedChatJson = null;
+      // The chat thread must never outlive the session it belongs to: if
+      // the next session's inbox fetch fails (its run was reaped, the DB
+      // is briefly unavailable, ...), refreshChat's catch would otherwise
+      // leave the previous session's bubbles on screen under the new
+      // title. Clear the cache and repaint synchronously on switch, before
+      // any network round-trip, so there is never a moment where session
+      // A's messages are shown under session B's heading.
+      chatMessagesCache = [];
+      renderChat();
     }
     selectedSessionId = id;
     await refreshDetail();
@@ -461,13 +470,33 @@
     chatThread.scrollTop = chatThread.scrollHeight;
   }
 
+  // Rendered when the inbox fetch for the *currently selected* session
+  // fails. Distinct from renderChat's "No messages yet" so the operator
+  // can tell "this run has nothing to show" apart from "we couldn't load
+  // this run's thread" -- the latter must never be silently mistaken for
+  // an empty thread, and must never be the previous session's messages.
+  function renderChatError() {
+    chatThread.innerHTML = "";
+    const error = document.createElement("p");
+    error.className = "hint chat-empty chat-fetch-error";
+    error.textContent = "Could not load this session's messages.";
+    chatThread.appendChild(error);
+  }
+
   async function refreshChat() {
     if (!selectedSessionId) return;
+    // Snapshot the session this fetch is for -- if the operator switches
+    // sessions again while the request is in flight, selectSession will
+    // already have cleared/repainted the thread for the new session, and
+    // a late-arriving response (success or failure) for the old id below
+    // must not clobber it.
+    const requestedSessionId = selectedSessionId;
     try {
       const data = await fetchJson(
-        "/api/sessions/" + encodeURIComponent(selectedSessionId) + "/inbox"
+        "/api/sessions/" + encodeURIComponent(requestedSessionId) + "/inbox"
       );
       if (!data) return;
+      if (requestedSessionId !== selectedSessionId) return;
       const next = JSON.stringify(data.messages || []);
       if (next === lastRenderedChatJson) return;
       lastRenderedChatJson = next;
@@ -475,6 +504,10 @@
       renderChat();
     } catch (err) {
       console.error("failed to refresh chat", err);
+      if (requestedSessionId !== selectedSessionId) return;
+      chatMessagesCache = [];
+      lastRenderedChatJson = null;
+      renderChatError();
     }
   }
 
