@@ -21,6 +21,7 @@ const {
 } = require("./auth");
 const { tailLines } = require("./tail");
 const { knex, ensureSchema, seedSkillsFromDisk } = require("./db");
+const { buildSessionGraph } = require("./session-graph");
 const { startSyncLoop } = require("./sync");
 const oauth = require("./auth-oauth");
 
@@ -439,6 +440,53 @@ function readJsonSafe(filePath) {
   }
 }
 
+// Reads a session's plan.json for the graph route. readJsonSafe above
+// collapses THREE different outcomes into a bare `null` -- "no plan.json
+// yet", "plan.json exists but cannot be opened", and "plan.json is not
+// valid JSON" -- which makes it impossible for a caller to tell a normal
+// session from a faulty one. This variant keeps them apart:
+//   * ENOENT  -> null. A session with no plan.json yet is NORMAL (the
+//                controller writes it after planning), NOT a fault, so
+//                the graph must not flag it as degraded.
+//   * any other fs error (EACCES, EISDIR, EIO, ELOOP, ...) -> rethrown,
+//                so the caller can mark the session degraded.
+//   * invalid JSON -> the SyntaxError from JSON.parse is rethrown too.
+//                JUDGEMENT CALL, documented deliberately: a plan.json
+//                that exists but does not parse is counted as DEGRADED,
+//                not as "no plan". Rendering a corrupt plan as a healthy
+//                empty session is the exact failure mode this flag
+//                exists to prevent; a half-written file caught mid-write
+//                self-heals on the next poll, so a transient flag is the
+//                cheaper error of the two.
+function readPlanForGraph(filePath) {
+  let raw;
+  try {
+    raw = fs.readFileSync(filePath, "utf8");
+  } catch (err) {
+    if (err && err.code === "ENOENT") return null;
+    throw err;
+  }
+  return JSON.parse(raw);
+}
+
+// The graph route is POLLED, so a permanently unreadable file would emit
+// one stderr line per poll forever. Log once per (session, file) per
+// process instead, and forget the key when that file reads cleanly again
+// so a later recurrence is logged afresh (i.e. log on transition). The
+// set holds at most 2 short keys per known session.
+const graphDegradedLogged = new Set();
+
+function logGraphDegradedOnce(id, file, err) {
+  const key = id + "\u0000" + file;
+  if (graphDegradedLogged.has(key)) return;
+  graphDegradedLogged.add(key);
+  console.error(`graph: unreadable ${file} for session ${id}:`, err && err.message);
+}
+
+function clearGraphDegraded(id, file) {
+  graphDegradedLogged.delete(id + "\u0000" + file);
+}
+
 function readIndex() {
   const idx = readJsonSafe(path.join(LIBERTA_RUNS_DIR, "index.json"));
   if (!idx || !Array.isArray(idx.sessions)) {
@@ -536,6 +584,140 @@ app.get("/api/sessions", async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: "db read failed", detail: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------
+// GET /api/sessions/graph -- the graph the mindmap UI (t11/t12) renders.
+//
+// ROUTE-ORDER TRAP: Express matches routes in registration order, and
+// `/api/sessions/:id` below would otherwise swallow the literal segment
+// "graph" as if it were a session id (returning a 404 "session not
+// found" rather than the graph, or worse, matching a real session
+// literally named "graph"). This route is therefore registered ABOVE
+// `/api/sessions/:id` so it always wins for this exact path.
+//
+// Session list comes from the same source /api/sessions uses (the
+// `runs` table, kept in sync with parent_session_id by sync.js/t9).
+// Per-session plan.json and the tail of events.jsonl are read directly
+// from disk here (mirroring readSessionFromDisk's approach below) and
+// handed to buildSessionGraph as plain data -- this route does no graph
+// logic of its own, it only gathers input for the pure builder.
+//
+// PER-SESSION FAULT ISOLATION: the per-session disk reads are each
+// wrapped in their own try/catch below. plan.json is read with
+// readPlanForGraph (NOT readJsonSafe, which would swallow the fault and
+// make the catch dead code), and tailLines guards statSync only, so an
+// events.jsonl that exists but cannot be opened (EACCES, EISDIR, EIO)
+// throws out of the read. Without the inner catches, ONE unreadable file
+// would fail the whole graph for every other session. With them, that
+// session degrades to an empty plan/event list and its node still
+// appears, carrying `degraded: true` plus `degraded_sources` -- the
+// subset of ["plan.json", "events.jsonl"] that could not be read as
+// usable data -- so the mindmap can flag it rather than silently showing
+// it as a session with no plan. Every other node is unaffected, and the
+// response is still 200.
+//
+// WHAT COUNTS AS DEGRADED, exactly: a file that EXISTS but could not be
+// turned into data -- unopenable (EACCES), a directory in its place
+// (EISDIR), an I/O error, or (for plan.json) content that is not valid
+// JSON. A file that is simply ABSENT is NOT degraded: a session with no
+// plan.json yet, or no events.jsonl yet, is a normal early-life session,
+// and flagging it would make the flag meaningless.
+//
+// LOG VOLUME: this route is polled, so the server-side log line for a
+// degraded file is emitted once per (session, file) per process, and
+// re-armed when that file reads cleanly again -- not once per request.
+//
+// NODE SHAPE NOTE: `degraded`/`degraded_sources` are added HERE, not in
+// session-graph.js -- the builder is pure and knows nothing about
+// filesystem readability. `degraded` is present on every node (false for
+// healthy ones) so consumers never have to test for `undefined`.
+//
+// Anything that still escapes goes to next(err) so t24's JSON error
+// handler owns the response: the client gets a generic
+// {"error":"internal server error"} with no err.message, and the real
+// error (which for fs errors embeds an absolute path under the operator's
+// home directory) is logged server-side only.
+//
+// Read-only: this route never writes anything under LIBERTA_RUNS_DIR.
+app.get("/api/sessions/graph", async (req, res, next) => {
+  try {
+    const runs = await knex("runs").select("*");
+    const sessions = runs.map((r) => ({
+      id: r.id,
+      project_path: r.project_path,
+      status: r.status,
+      parent_session_id: r.parent_session_id ?? null,
+      is_active: !!r.active,
+    }));
+
+    const plans = {};
+    const events = {};
+    // id -> ["plan.json", "events.jsonl"] for sessions whose files could
+    // not be read; used to flag the node without dropping it.
+    const degradedSources = new Map();
+    for (const session of sessions) {
+      const id = session.id;
+      // Defense in depth, same as every other per-id path below: the
+      // regex allowlist alone does not stop `..`, so pair it with the
+      // resolved-path containment check. An index/DB entry that fails
+      // either is skipped (never 500s) rather than failing the whole
+      // response for every other, well-formed session.
+      if (!SESSION_ID_PATTERN.test(id)) continue;
+      const dir = sessionDir(id);
+      if (!isPathInsideRunsDir(dir)) continue;
+
+      // Per-file, so an unreadable plan.json does not also cost this
+      // session its events (and vice versa). NOTE: readJsonSafe is NOT
+      // used here -- it returns null for a missing file, an unopenable
+      // file and a corrupt file alike, which would make this catch dead
+      // code and `degraded` permanently false for plan.json.
+      // readPlanForGraph returns null only for ENOENT and throws for the
+      // real faults.
+      const failed = [];
+      try {
+        plans[id] = readPlanForGraph(path.join(dir, "plan.json"));
+        clearGraphDegraded(id, "plan.json");
+      } catch (err) {
+        logGraphDegradedOnce(id, "plan.json", err);
+        plans[id] = null;
+        failed.push("plan.json");
+      }
+
+      try {
+        // tailLines guards statSync but not the read itself, so an
+        // existing-but-unopenable events.jsonl throws here.
+        const rawLines = tailLines(path.join(dir, "events.jsonl"), 50);
+        events[id] = rawLines.map((line) => {
+          try {
+            return JSON.parse(line);
+          } catch (err) {
+            return { raw: line };
+          }
+        });
+        clearGraphDegraded(id, "events.jsonl");
+      } catch (err) {
+        logGraphDegradedOnce(id, "events.jsonl", err);
+        events[id] = [];
+        failed.push("events.jsonl");
+      }
+
+      if (failed.length > 0) degradedSources.set(id, failed);
+    }
+
+    const graph = buildSessionGraph({ sessions, plans, events });
+    const nodes = graph.nodes.map((node) => {
+      const sources = degradedSources.get(node.id);
+      return sources
+        ? { ...node, degraded: true, degraded_sources: sources }
+        : { ...node, degraded: false, degraded_sources: [] };
+    });
+    res.json({ nodes, edges: graph.edges, generated_at: new Date().toISOString() });
+  } catch (err) {
+    // t24's error handler answers with a generic JSON body and logs the
+    // real error (with its absolute paths) server-side only.
+    next(err);
   }
 });
 
