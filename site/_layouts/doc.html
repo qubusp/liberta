@@ -1,0 +1,46 @@
+---
+layout: default
+---
+<article class="doc">
+  <header class="doc-header">
+    <p class="doc-eyebrow">Documentation</p>
+    <h1>{{ page.title }}</h1>
+    {% if page.summary %}<p class="doc-summary">{{ page.summary }}</p>{% endif %}
+  </header>
+
+  <div class="doc-body">
+    {{ content }}
+  </div>
+
+  {% if page.sources %}
+  <aside class="doc-sources" aria-labelledby="doc-sources-heading">
+    <h2 id="doc-sources-heading">Where this page comes from</h2>
+    <p>Every statement above is taken from {{ page.sources }} in the repository.</p>
+  </aside>
+  {% endif %}
+
+  <nav class="doc-pager" aria-label="Documentation pages">
+    {% assign nav = site.docs_nav %}
+    {% assign idx = -1 %}
+    {% for item in nav %}
+      {% if item.url == page.url %}{% assign idx = forloop.index0 %}{% endif %}
+    {% endfor %}
+    {% if idx > 0 %}
+      {% assign previdx = idx | minus: 1 %}
+      {% assign prev = nav[previdx] %}
+      <a class="doc-pager-link doc-pager-prev" href="{{ prev.url | relative_url }}">
+        <span class="doc-pager-dir">Previous</span>
+        <span class="doc-pager-title">{{ prev.title }}</span>
+      </a>
+    {% endif %}
+    {% assign lastidx = nav.size | minus: 1 %}
+    {% if idx > -1 and idx < lastidx %}
+      {% assign nextidx = idx | plus: 1 %}
+      {% assign nextpage = nav[nextidx] %}
+      <a class="doc-pager-link doc-pager-next" href="{{ nextpage.url | relative_url }}">
+        <span class="doc-pager-dir">Next</span>
+        <span class="doc-pager-title">{{ nextpage.title }}</span>
+      </a>
+    {% endif %}
+  </nav>
+</article>
