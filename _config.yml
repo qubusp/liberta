@@ -1,0 +1,64 @@
+# Liberta documentation site.
+#
+# Built by GitHub Pages' own Jekyll. Deliberately dependency-free: no gem
+# theme, no remote_theme, no plugins beyond what Pages runs in safe mode,
+# so nothing here can be rejected at build time or needs installing.
+
+title: Liberta
+tagline: An unattended, long-running orchestration harness for Claude Code
+description: >-
+  Liberta is an unattended, long-running orchestration harness for Claude
+  Code. It keeps a thin controller loop alive on disk, farms every real unit
+  of work out to fresh-context specialist subagents, verifies each one
+  independently, and stops on a clear terminal condition.
+
+# The site is served from https://qubusp.github.io/liberta/, so every
+# internal URL must be prefixed with this. Use `relative_url` or
+# {{ site.baseurl }} for ALL internal hrefs and srcs -- a root-absolute
+# path 404s under the subpath while the HTML itself still returns 200.
+url: "https://qubusp.github.io"
+baseurl: "/liberta"
+repo_url: "https://github.com/qubusp/liberta"
+
+permalink: pretty
+
+markdown: kramdown
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+
+# The docs nav, in reading order. Every entry's `url` is relative to
+# baseurl and is passed through `relative_url` in _includes/docs-nav.html.
+docs_nav:
+  - title: Overview
+    url: /docs/overview/
+    blurb: What Liberta is, and the failure modes it is shaped around.
+  - title: The controller loop
+    url: /docs/controller-loop/
+    blurb: SETUP, LOOP and TERMINAL; waves and the task board.
+  - title: Agent roster
+    url: /docs/agents/
+    blurb: Every specialist subagent and what it is dispatched for.
+  - title: Verification and merge gates
+    url: /docs/verification/
+    blurb: Why a producer's own say-so never marks a task done.
+  - title: The session store
+    url: /docs/session-store/
+    blurb: Every file the run keeps on disk, and what it is for.
+  - title: The console
+    url: /docs/console/
+    blurb: The web UI, its status states, and the chat window.
+  - title: Checking status
+    url: /docs/status/
+    blurb: /liberta status, and why it touches nothing.
+  - title: Installing and running
+    url: /docs/install/
+    blurb: install.sh, the console, and starting a run.
+  - title: Stopping and budget
+    url: /docs/stopping/
+    blurb: The budget model and every terminal condition.
+
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - vendor

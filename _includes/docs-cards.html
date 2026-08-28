@@ -1,0 +1,8 @@
+<ul class="card-grid">
+  {% for item in site.docs_nav %}
+  <li class="card">
+    <h3><a href="{{ item.url | relative_url }}">{{ item.title }}</a></h3>
+    <p>{{ item.blurb }}</p>
+  </li>
+  {% endfor %}
+</ul>
