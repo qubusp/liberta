@@ -1,0 +1,21 @@
+<nav class="sidebar-nav" aria-label="Documentation">
+  <p class="sidebar-nav-heading" id="docs-nav-heading">Documentation</p>
+  <ul class="sidebar-nav-list">
+    <li>
+      <a class="sidebar-nav-link{% if page.url == '/' %} is-current{% endif %}"
+         href="{{ '/' | relative_url }}"
+         {% if page.url == '/' %}aria-current="page"{% endif %}>Home</a>
+    </li>
+    {% for item in site.docs_nav %}
+    <li>
+      <a class="sidebar-nav-link{% if page.url == item.url %} is-current{% endif %}"
+         href="{{ item.url | relative_url }}"
+         {% if page.url == item.url %}aria-current="page"{% endif %}>{{ item.title }}</a>
+    </li>
+    {% endfor %}
+  </ul>
+  <p class="sidebar-nav-heading">Project</p>
+  <ul class="sidebar-nav-list">
+    <li><a class="sidebar-nav-link" href="{{ site.repo_url }}">Source on GitHub</a></li>
+  </ul>
+</nav>

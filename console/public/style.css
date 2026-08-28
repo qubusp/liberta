@@ -777,11 +777,65 @@ textarea:focus {
   box-shadow: 0 0 0 3px var(--color-primary-light);
 }
 
-#import-skill-form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  margin-top: var(--space-2);
+/* Field scaffolding shared by the import form and the two skill editors.
+   Every control has a real, visible <label for>; nothing here relies on a
+   placeholder to name a field. */
+.field-label {
+  display: block;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: var(--space-1);
+}
+
+/* --text-muted (#8a839c) is only ~3.2:1 on white and would fail AA at this
+   size, so the optional marker uses --text-secondary like the help text. */
+.field-optional {
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-transform: none;
+  font-size: 0.72rem;
+}
+
+.field-help {
+  margin: var(--space-1) 0 0;
+  font-size: 0.74rem;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.field-help code {
+  background: var(--bg-code);
+  border: 1px solid var(--border-color);
+  padding: 0.05rem 0.3rem;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+}
+
+.field-error {
+  margin: var(--space-1) 0 0;
+  font-size: 0.74rem;
+  line-height: 1.45;
+  font-weight: 600;
+  color: var(--status-danger-text);
+}
+
+.field-error[hidden] {
+  display: none;
+}
+
+/* Error state is never colour-only: the field also gains a thicker border
+   and the message sits directly beneath it. */
+input[aria-invalid="true"],
+textarea[aria-invalid="true"] {
+  border-color: var(--status-danger-text);
+  border-width: 2px;
+}
+
+input[aria-invalid="true"]:focus,
+textarea[aria-invalid="true"]:focus {
+  box-shadow: 0 0 0 3px var(--status-danger-bg);
 }
 
 /* =========================================================================
@@ -1386,5 +1440,671 @@ button.logout {
   }
   .card {
     padding: var(--space-3);
+  }
+}
+
+/* =========================================================================
+   SESSION MINDMAP -- "constellation" treatment (t12)
+   -------------------------------------------------------------------------
+   EVERY rule in this block is scoped to #mindmap-view (or to a .mindmap-*
+   class that only exists inside it), so the Runs view, the chat panel, the
+   pixel-art status pills and the Skills views are untouched. Nothing here
+   changes a :root token.
+
+   The map is a STAR CHART, not an org chart: a deep aubergine sky built
+   from the console's own sidebar colours, sessions drawn as luminous orbs
+   sized by task count, and lineage drawn as curved threads of light
+   (console/public/dashboard.js :: renderMindmapEdges).
+
+   ACCESSIBILITY NOTES, because a dark canvas makes these easy to lose:
+   - every caption colour below is checked against the surface it actually
+     sits on (see the contrast table in the t12 report); nothing is under
+     4.5:1 for body text;
+   - the focus ring is WHITE, not purple: purple on #29173f measures 2.70:1
+     and fails the 3:1 non-text requirement;
+   - status is never carried by colour or glow alone -- every node keeps its
+     text badge, and a degraded node additionally gets a hard dashed ring
+     and loses its glow entirely, so it reads as broken in greyscale too;
+   - all motion is gated behind prefers-reduced-motion (bottom of block) and
+     the fastest animation is 0.25Hz, far under the 3Hz limit.
+   ========================================================================= */
+#mindmap-view {
+  /* Local, view-scoped aliases of the console's existing dark-surface
+     palette. Derived tints are noted; nothing is invented wholesale. */
+  --mm-sky: var(--sidebar-bg); /* #29173f */
+  --mm-sky-deep: #1b0f2b; /* darker shade of --sidebar-bg, for depth */
+  --mm-sky-lift: var(--sidebar-bg-active); /* #3a2359 */
+  --mm-panel: #33204d; /* between --sidebar-bg and --sidebar-bg-active */
+  --mm-panel-hover: #462c6b;
+  --mm-text: #ffffff;
+  --mm-text-soft: var(--sidebar-text); /* #d8cdec */
+  --mm-text-muted: #bcadd6; /* --sidebar-text-muted lifted to clear AA */
+  --mm-glow: var(--pixel-glow); /* #b79ef2 */
+  --mm-glow-bright: #efe7ff;
+  --mm-border: #503572;
+  --mm-focus: #ffffff;
+}
+
+#mindmap-view .mindmap-card {
+  padding: var(--space-5);
+  background: var(--mm-sky);
+  border-color: var(--mm-border);
+  color: var(--mm-text-soft);
+}
+
+#mindmap-view .card-title,
+#mindmap-view .card-subtitle {
+  color: var(--mm-text);
+}
+
+#mindmap-view .hint {
+  color: var(--mm-text-soft);
+}
+
+#mindmap-view code {
+  background: var(--mm-sky-lift);
+  color: var(--mm-glow-bright);
+  border-radius: var(--radius-sm);
+  padding: 0 4px;
+}
+
+#mindmap-view .mindmap-error {
+  color: #ffc9a6; /* warning tint that clears AA on the aubergine sky */
+}
+
+.mindmap-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin: var(--space-3) 0 var(--space-4);
+}
+
+.mindmap-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 13px;
+  color: var(--mm-text-soft);
+}
+
+.mindmap-toggle input {
+  accent-color: var(--mm-glow);
+}
+
+/* --- the sky ----------------------------------------------------------- */
+.mindmap-viewport {
+  overflow: auto;
+  max-width: 100%;
+  border: 1px solid var(--mm-border);
+  border-radius: var(--radius-lg);
+  background: var(--mm-sky-deep);
+}
+
+.mindmap-canvas {
+  position: relative;
+  min-width: 100%;
+  /* Depth gradient + a fixed, deterministic scatter of faint background
+     stars. Purely decorative and non-repeating per paint, so it never
+     shifts on a poll. */
+  background-color: var(--mm-sky-deep);
+  background-image:
+    radial-gradient(110% 85% at 20% 6%, rgba(110, 73, 203, 0.22) 0%, rgba(27, 15, 43, 0) 58%),
+    radial-gradient(85% 75% at 86% 94%, rgba(183, 158, 242, 0.11) 0%, rgba(27, 15, 43, 0) 56%),
+    radial-gradient(1.4px 1.4px at 12% 22%, rgba(255, 255, 255, 0.5) 50%, transparent 51%),
+    radial-gradient(1.6px 1.6px at 37% 68%, rgba(255, 255, 255, 0.4) 50%, transparent 51%),
+    radial-gradient(1.2px 1.2px at 61% 14%, rgba(255, 255, 255, 0.45) 50%, transparent 51%),
+    radial-gradient(1.8px 1.8px at 79% 47%, rgba(255, 255, 255, 0.35) 50%, transparent 51%),
+    radial-gradient(1.3px 1.3px at 91% 76%, rgba(255, 255, 255, 0.42) 50%, transparent 51%),
+    radial-gradient(1.5px 1.5px at 27% 88%, rgba(255, 255, 255, 0.32) 50%, transparent 51%),
+    linear-gradient(160deg, #241436 0%, #140a20 100%);
+}
+
+.mindmap-edges {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* Threads of light. The stroke colour is a per-edge gradient set in JS
+   (bright at the mother, faint at the child); this rule owns weight and
+   the soft bloom only. */
+.mindmap-edge {
+  fill: none;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 3px rgba(183, 158, 242, 0.55));
+}
+
+.mindmap-nodes {
+  position: relative;
+}
+
+/* --- a star ------------------------------------------------------------ */
+.mindmap-node {
+  position: absolute;
+  width: 178px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  text-align: center;
+  padding: 0 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 22px;
+  background: transparent;
+  box-shadow: none;
+  cursor: pointer;
+  font: inherit;
+  color: var(--mm-text);
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.mindmap-node:hover {
+  background: rgba(70, 44, 107, 0.72);
+  border-color: var(--mm-border);
+}
+
+/* WHITE ring, deliberately: a --color-primary ring on #29173f measures
+   2.70:1 and fails the 3:1 non-text contrast requirement. */
+.mindmap-node:focus-visible {
+  outline: 3px solid var(--mm-focus);
+  outline-offset: 2px;
+  background: rgba(70, 44, 107, 0.85);
+}
+
+.mindmap-orb {
+  /* Fixed-height slot so orbs of different sizes all centre on the same
+     layout point and captions line up. */
+  height: 84px;
+  width: 84px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.mindmap-orb-core {
+  width: var(--orb-size, 40px);
+  height: var(--orb-size, 40px);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 34% 30%, #ffffff 0%, var(--mm-glow) 42%, #6e49cb 78%, #4b2f8f 100%);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.28),
+    0 0 12px 2px rgba(183, 158, 242, 0.45),
+    0 0 30px 6px rgba(110, 73, 203, 0.35);
+}
+
+/* Status hue for the star core. The badge underneath always spells the
+   status out, so this is reinforcement, never the only signal. */
+.mindmap-node[data-status="done"] .mindmap-orb-core,
+.mindmap-node[data-status="completed"] .mindmap-orb-core,
+.mindmap-node[data-status="succeeded"] .mindmap-orb-core {
+  background: radial-gradient(circle at 34% 30%, #ffffff 0%, #8ff0b6 42%, #22a35b 80%, #126339 100%);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.28),
+    0 0 12px 2px rgba(120, 231, 168, 0.4),
+    0 0 26px 6px rgba(34, 163, 91, 0.28);
+}
+
+.mindmap-node[data-status="failed"] .mindmap-orb-core,
+.mindmap-node[data-status="error"] .mindmap-orb-core,
+.mindmap-node[data-status="blocked"] .mindmap-orb-core {
+  background: radial-gradient(circle at 34% 30%, #ffffff 0%, #ffb0b6 42%, #d9414f 80%, #7d1f28 100%);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.28),
+    0 0 12px 2px rgba(255, 140, 150, 0.4),
+    0 0 26px 6px rgba(217, 65, 79, 0.26);
+}
+
+.mindmap-node[data-status="queued"] .mindmap-orb-core,
+.mindmap-node[data-status="pending"] .mindmap-orb-core,
+.mindmap-node[data-status="waiting"] .mindmap-orb-core,
+.mindmap-node[data-status="idle"] .mindmap-orb-core,
+.mindmap-node[data-status="checkpoint"] .mindmap-orb-core {
+  background: radial-gradient(circle at 34% 30%, #f6f1ff 0%, #b9a8d8 44%, #6a5590 80%, #3d2f57 100%);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.2),
+    0 0 8px 1px rgba(183, 158, 242, 0.22);
+}
+
+/* RUNNING / ACTIVE: the brightest things on the canvas -- a bigger bloom,
+   a white corona ring, and a slow 4s breathe (0.25Hz). */
+.mindmap-node.mindmap-node-live .mindmap-orb-core {
+  background:
+    radial-gradient(circle at 34% 30%, #ffffff 0%, #ffffff 18%, var(--mm-glow-bright) 38%, var(--mm-glow) 62%, #6e49cb 88%, #4b2f8f 100%);
+  box-shadow:
+    0 0 0 2px rgba(255, 255, 255, 0.55),
+    0 0 18px 4px rgba(239, 231, 255, 0.6),
+    0 0 46px 14px rgba(110, 73, 203, 0.5);
+  animation: mindmap-breathe 4s ease-in-out infinite;
+  animation-delay: var(--star-delay, 0s);
+}
+
+@keyframes mindmap-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.09); }
+}
+
+/* DEGRADED: deliberately NOT pretty. The glow is removed entirely, the
+   core goes flat and desaturated, and a hard dashed amber ring is drawn
+   around it -- a SHAPE difference that survives greyscale, colour-blind
+   vision and the surrounding bloom. The "degraded: <file>" badge below
+   spells it out in words as well. */
+.mindmap-node.mindmap-node-degraded .mindmap-orb-core {
+  background: #6b5a2f;
+  box-shadow: none;
+  outline: 3px dashed #ffbe5c;
+  outline-offset: 5px;
+  animation: none;
+}
+
+.mindmap-node-degraded {
+  background: rgba(122, 80, 12, 0.3);
+  border-color: #ffbe5c;
+  border-style: dashed;
+}
+
+/* SELECTED: a solid white halo ring plus a lifted panel. */
+.mindmap-node-selected {
+  background: rgba(70, 44, 107, 0.9);
+  border-color: #ffffff;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.5), 0 0 24px rgba(183, 158, 242, 0.4);
+}
+
+.mindmap-node.mindmap-node-fixture .mindmap-orb-core {
+  opacity: 0.82;
+}
+
+/* --- the caption under a star ------------------------------------------ */
+.mindmap-caption {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  width: 100%;
+  /* Its own slightly-lifted plate so text never has to fight a glow for
+     contrast. This is the surface every ratio in the contrast table is
+     measured against. */
+  background: var(--mm-panel);
+  border: 1px solid var(--mm-border);
+  border-radius: 18px;
+  padding: 7px 9px 8px;
+  box-shadow: 0 6px 18px rgba(10, 5, 18, 0.45);
+}
+
+.mindmap-node-id {
+  font-weight: 700;
+  font-size: 12px;
+  line-height: 1.25;
+  color: var(--mm-text);
+  word-break: break-all;
+}
+
+.mindmap-node-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 3px;
+}
+
+.mindmap-badge {
+  font-size: 10px;
+  padding: 0.1rem 0.45rem;
+}
+
+.mindmap-badge-fixture {
+  background: var(--status-neutral-bg);
+  color: var(--status-neutral-text);
+}
+
+/* The shared amber pair (--status-warning-bg #fdf1de on
+   --status-warning-text #a85e07) computes to 4.41:1 and misses AA at the
+   10px badge size. Darkened HERE ONLY -- scoped to the mindmap's own
+   badges -- so the Runs view and every other consumer of the token keeps
+   its current appearance. Measured after the change: 6.84:1. */
+.mindmap-badge-degraded {
+  background: var(--status-warning-bg);
+  color: #7d4605;
+}
+
+#mindmap-view .mindmap-badge.status-queued,
+#mindmap-view .mindmap-badge.status-pending,
+#mindmap-view .mindmap-badge.status-waiting {
+  color: #7d4605;
+}
+
+.mindmap-badge-active {
+  background: var(--status-info-bg);
+  color: var(--status-info-text);
+}
+
+.mindmap-node-meta,
+.mindmap-node-tasks,
+.mindmap-node-lineage {
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--mm-text-soft);
+}
+
+.mindmap-node-tasks {
+  color: var(--mm-text-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.mindmap-node-lineage {
+  color: var(--mm-text-muted);
+  font-style: italic;
+  word-break: break-all;
+}
+
+/* --- text alternative --------------------------------------------------- */
+#mindmap-view .mindmap-list {
+  margin: 0;
+  padding-left: var(--space-5);
+  color: var(--mm-text-soft);
+}
+
+#mindmap-view .mindmap-list-item {
+  font-size: 12px;
+  margin-bottom: var(--space-2);
+  word-break: break-word;
+  color: var(--mm-text);
+}
+
+#mindmap-view .mindmap-list-detail {
+  color: var(--mm-text-soft);
+}
+
+/* --- narrow viewports ---------------------------------------------------
+   The card shrinks to the page; the SKY scrolls inside .mindmap-viewport,
+   so a wide constellation never pushes the document itself sideways. */
+@media (max-width: 700px) {
+  #mindmap-view .mindmap-card {
+    padding: var(--space-3);
+  }
+  .mindmap-viewport {
+    max-height: 62vh;
+  }
+}
+
+/* --- reduced motion -----------------------------------------------------
+   Every star, every thread and every caption stays fully visible and fully
+   legible; only the breathing and the hover/focus transitions stop. */
+@media (prefers-reduced-motion: reduce) {
+  .mindmap-node.mindmap-node-live .mindmap-orb-core,
+  .mindmap-node .mindmap-orb-core {
+    animation: none !important;
+    transform: none !important;
+  }
+  .mindmap-node {
+    transition: none !important;
+  }
+}
+
+/* =========================================================================
+   Skills library (t41): selectable rows + the import panel
+
+   Two problems this section fixes.
+   (1) The rows were plain <tr>s with a click handler: no tab stop, no
+       keyboard activation, no selected state. They now carry a real
+       <button class="row-select"> in the name cell, stretched across the
+       cell so the whole name is the target, with hover/focus/selected
+       states and aria-pressed + aria-current doing the announcing.
+   (2) The import form was placeholder-only inputs in a bare stack ending
+       in a full-bleed button. It is now a collapsed <details> panel built
+       from the same card/border/radius/spacing tokens as everything else.
+
+   No new colours: --color-primary / --color-primary-light /
+   --color-primary-text for selection and focus, --bg-surface-alt for
+   hover, --status-* for feedback -- exactly the vocabulary the Runs view
+   and the status pills already use.
+   ========================================================================= */
+
+/* The button provides the padding, so the cell gives up its own. */
+.selectable-table td.row-select-cell {
+  padding: 0;
+}
+
+.row-select {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: 0.55rem 0.6rem;
+  margin: 0;
+  font-family: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-primary-text);
+  cursor: pointer;
+  transition: color var(--transition-fast);
+}
+
+.selectable-table tbody tr:hover .row-select {
+  text-decoration: underline;
+}
+
+.row-select:focus-visible {
+  outline: 2px solid var(--color-primary-text);
+  outline-offset: -2px;
+}
+
+/* Selected row: the primary-light wash the Runs view already uses for a
+   selected session, PLUS a solid left rail, so selection survives
+   greyscale and is not carried by a tint alone. */
+.selectable-table tbody tr.selected-row {
+  background: var(--color-primary-light);
+}
+
+.selectable-table tbody tr.selected-row td:first-child {
+  box-shadow: inset 3px 0 0 var(--color-primary);
+}
+
+.selectable-table tbody tr.selected-row .row-select {
+  color: var(--color-primary-text);
+}
+
+/* ---- Import panel ---------------------------------------------------- */
+.import-panel {
+  margin-top: var(--space-4);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface-alt);
+  overflow: hidden;
+}
+
+.import-summary {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding: var(--space-3) var(--space-4);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+/* Replace the default triangle with a token-coloured chevron that rotates
+   on open, so the control reads as a disclosure in both states. */
+.import-summary::-webkit-details-marker {
+  display: none;
+}
+
+.import-summary::before {
+  content: "";
+  width: 0.5rem;
+  height: 0.5rem;
+  flex: 0 0 auto;
+  border-right: 2px solid var(--color-primary-text);
+  border-bottom: 2px solid var(--color-primary-text);
+  transform: rotate(-45deg);
+  transition: transform var(--transition-fast);
+  margin-right: var(--space-1);
+  position: relative;
+  top: -1px;
+}
+
+.import-panel[open] > .import-summary::before {
+  transform: rotate(45deg);
+}
+
+.import-summary:hover {
+  background: var(--color-primary-light);
+}
+
+.import-summary:focus-visible {
+  outline: 2px solid var(--color-primary-text);
+  outline-offset: -2px;
+}
+
+.import-summary-title {
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-primary);
+}
+
+.import-summary-hint {
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+}
+
+.import-panel-body {
+  padding: var(--space-4);
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-surface);
+}
+
+/* One block per import SOURCE. Today there is exactly one ("Paste
+   markdown"); t42 adds a git source as a sibling .import-source plus a
+   switcher above them, and nothing below this line has to change. */
+.import-source + .import-source {
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-color);
+}
+
+/* h3, so the document heading order runs h2 "Skills library" -> h3
+   "Paste markdown" with no level skipped when t42 adds a second source. */
+h3.import-source-title {
+  margin: 0 0 var(--space-3);
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.import-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* Two fields side by side when there is room for both, one column when
+   there is not. In the 420px library column there is not, so Name and
+   Kind stack; the rule needs no breakpoint to get that right. */
+.form-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.form-field {
+  min-width: 0;
+}
+
+/* The textarea's own default margin fights the flex gap. */
+.form-field textarea {
+  margin: 0;
+}
+
+.form-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+/* Sized to its label, not to the panel: the old button was full-bleed
+   purple across the whole card. */
+.form-actions .btn-primary {
+  flex: 0 0 auto;
+  width: auto;
+  align-self: flex-start;
+}
+
+.form-actions .btn-primary:focus-visible,
+.editor-actions button:focus-visible {
+  outline: 2px solid var(--sidebar-bg);
+  outline-offset: 2px;
+}
+
+/* ---- Inline result feedback (replaces alert()) ----------------------- */
+.form-feedback {
+  margin: 0;
+  padding: 0.4rem 0.7rem;
+  border-radius: var(--radius-md);
+  font-size: 0.76rem;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.form-feedback[hidden] {
+  display: none;
+}
+
+.form-feedback-success {
+  background: var(--status-success-bg);
+  color: var(--status-success-text);
+}
+
+.form-feedback-error {
+  background: var(--status-danger-bg);
+  color: var(--status-danger-text);
+}
+
+/* ---- Skill editor heading row ---------------------------------------- */
+.skill-editor-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-3);
+}
+
+.skill-editor-head h4 {
+  margin: 0;
+}
+
+#skill-detail .form-feedback,
+#run-skill-editor .form-feedback {
+  margin-top: var(--space-3);
+}
+
+/* One column below the point where two side-by-side fields stop fitting
+   in the 420px library column; also what keeps 390px free of horizontal
+   overflow. */
+@media (max-width: 720px) {
+  .import-panel-body {
+    padding: var(--space-3);
+  }
+  .import-summary {
+    padding: var(--space-3);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .row-select,
+  .import-summary::before {
+    transition: none;
   }
 }
