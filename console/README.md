@@ -251,35 +251,72 @@ every visual/UI task can produce real, logged-in evidence the same way:
     `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome` is
     used.
 
-  **It always starts its own console, never attaches to yours.** The port
-  was once hardcoded to `4999` and *any* listener already there was
-  reused. With visual tasks running concurrently that is a real hazard:
-  a second `shot.mjs` -- or an unrelated console -- holding 4999 meant
-  this tool would screenshot a **different** console, and since that
-  console serves the same markup on the same origin, the auth guard
-  certified it happily and the evidence described the wrong tree. Now the
-  preferred port is used only if it is provably free, otherwise a free
-  port is chosen automatically; the console is always spawned as a child;
-  we wait for the `listening on` line on *that child's own stdout pipe*,
-  which no foreign process can produce; and we then log in with the
-  password `crypto.randomBytes` generated for this invocation, which no
-  foreign console can accept. If that identity proof fails, the run
-  aborts loudly rather than capturing a server it cannot prove is its
-  own.
+  **It always starts its own console, and cannot be shadowed by someone
+  else's.** The port was once hardcoded to `4999` and *any* listener
+  already there was reused, so a concurrent `shot.mjs` or an unrelated
+  console meant this tool screenshotted a **different** console and
+  certified it happily -- the evidence described the wrong tree.
 
-  **Credentials are per-invocation.** They used to be the constants
-  a pair of fixed strings committed in a public repo, while
-  `server.js` does `app.listen(PORT)` and therefore binds *all*
-  interfaces. During a screenshot run that made the real console -- real
+  The first fix for that was defeated, and how it was defeated is the
+  whole reason the current design looks the way it does. That version
+  spawned a real child, waited for the `listening on` line on the child's
+  own stdout, and logged in with a per-invocation random password -- and
+  an auditor still got two PNGs reading "EVIDENCE FORGED BY FOREIGN
+  SERVER" out of a plain default invocation, exit 0, empty stderr. Three
+  platform facts, each measured on macOS, combined:
+
+  - a free-port probe that binds `0.0.0.0:P` **succeeds** while another
+    process holds `127.0.0.1:P` or `[::1]:P`, so a loopback-only squatter
+    was reported as "port free";
+  - Node sets `SO_REUSEADDR`, so a wildcard bind and a specific bind of
+    the same port coexist -- the child really did start and really did
+    print its line;
+  - `localhost` resolves `::1` **before** `127.0.0.1`, and the kernel
+    routes to the most specific matching bind. So every request to
+    `http://localhost:4999` reached the squatter on `[::1]:4999`, never
+    the child.
+
+  The child's stdout line proves *the child started*. It does not prove
+  *traffic to the base URL reaches the child*. Three things now do:
+
+  - **Probe every reachable address.** A port counts as free only if
+    `127.0.0.1`, `::1` **and** `0.0.0.0` can all be bound; a refusal on
+    any one of them means it is taken, and an OS-assigned free port is
+    used instead.
+  - **One literal address, never a name.** The child is told to bind the
+    single address `127.0.0.1` via `LIBERTA_CONSOLE_HOST`, and the base
+    URL is built from that same literal. Name resolution leaves the trust
+    chain, the kernel refuses a second bind of exactly `127.0.0.1:P`, and
+    a foreign wildcard listener loses to the more specific bind -- so a
+    child that bound successfully is the only thing that can answer the
+    address the tool talks to.
+  - **A credential proof that actually proves something.** A 302 carrying
+    a correctly *named* cookie is trivially forgeable: both are chosen by
+    whoever answers the socket, and a hostile server that accepts any
+    password and sets a `liberta_console_session` cookie satisfied the old
+    check completely. The tool now requires that a deliberately **wrong**
+    password is **rejected**, and that the cookie issued for the right one
+    **verifies under the HMAC secret this process generated seconds
+    earlier** (`verifySessionCookie` from `auth.js`). Forging that needs
+    the secret, so this holds even if the routing argument above were
+    somehow wrong on some other platform.
+
+  If any of it fails the run aborts loudly, rather than capturing a
+  server it cannot prove is its own.
+
+  **Credentials are per-invocation.** They used to be a pair of fixed
+  strings committed in a public repo, while the console bound *all*
+  interfaces by default. During a screenshot run that made the real console -- real
   `console/data/liberta.sqlite`, real `~/.claude/liberta-runs` -- reachable
   on `0.0.0.0`, with a *published* signing secret, so a LAN-adjacent
   attacker could forge a valid session cookie without knowing the
   password. Both values are now `crypto.randomBytes` per run and never
-  logged. Note that this closes the credential half only: the child
-  console still binds every interface, because the bind address lives in
-  `server.js` (`app.listen(PORT)`), which `shot.mjs` cannot change from
-  the outside. Making `server.js` bind `127.0.0.1` (or honour a
-  `LIBERTA_CONSOLE_HOST` env var) remains an open follow-up.
+  logged. The follow-up this section used to list as open -- that the
+  child still bound every interface, because the bind address lived in
+  `server.js` where `shot.mjs` could not reach it -- is closed:
+  `server.js` honours `LIBERTA_CONSOLE_HOST`, and `shot.mjs` sets it to
+  `127.0.0.1`, so the ephemeral child sits on loopback only for the length
+  of the run.
 
   **Stale evidence is cleared up front.** Cleanup used to delete only the
   PNGs written by the current invocation, so a run that failed at the
@@ -332,7 +369,15 @@ every visual/UI task can produce real, logged-in evidence the same way:
 - **`console/scripts/probes/auth-bypass.mjs`** is the exact bypass above,
   committed as a permanent regression probe: a `--script` module that
   clears all cookies and navigates to `/api/sessions`. Re-run it whenever
-  the guard is touched; it MUST exit non-zero and leave zero PNGs.
+  the guard is touched; it MUST exit non-zero, leave zero PNGs, and fail
+  specifically on the **contentType** condition (`document.contentType is
+  "application/json"`). It builds that URL from the page's own origin
+  rather than hardcoding one: it used to target a literal
+  `http://localhost:4999/api/sessions`, which after the port became
+  dynamic pointed at nothing this run started -- so it still failed, but
+  on a connection error instead of the condition it exists to exercise. A
+  regression test that fails for the wrong reason is not testing
+  anything.
 
   ```
   rm -rf /tmp/shot-bypass
