@@ -111,6 +111,9 @@
   }
 
   async function selectSession(id) {
+    if (id !== selectedSessionId) {
+      lastRenderedChatJson = null;
+    }
     selectedSessionId = id;
     await refreshDetail();
   }
@@ -349,6 +352,7 @@
   const chatSend = document.getElementById("chat-send");
   const chatError = document.getElementById("chat-error");
   let chatMessagesCache = [];
+  let lastRenderedChatJson = null;
 
   function formatTs(ts) {
     if (!ts) return "";
@@ -417,6 +421,9 @@
         "/api/sessions/" + encodeURIComponent(selectedSessionId) + "/inbox"
       );
       if (!data) return;
+      const next = JSON.stringify(data.messages || []);
+      if (next === lastRenderedChatJson) return;
+      lastRenderedChatJson = next;
       chatMessagesCache = data.messages || [];
       renderChat();
     } catch (err) {
