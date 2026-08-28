@@ -29,6 +29,56 @@
     return span;
   }
 
+  // A table row is not a control. Every selectable skill row therefore
+  // carries a REAL <button> in its name cell: it is in the tab order, it
+  // is activated by Enter/Space for free, and its aria-pressed state
+  // exposes the selection to assistive tech instead of leaving it to a
+  // background colour. The row keeps a click handler purely as a larger
+  // mouse target -- it is never the only way in.
+  function rowSelectButton(label, onSelect) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "row-select";
+    btn.setAttribute("aria-pressed", "false");
+    btn.textContent = label;
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      onSelect();
+    });
+    return btn;
+  }
+
+  // Mark exactly one row of `tbody` as selected, both visually
+  // (.selected-row) and programmatically (aria-current on the row,
+  // aria-pressed on its control).
+  function markSelectedRow(tbody, name) {
+    tbody.querySelectorAll("tr").forEach((row) => {
+      const isSelected = name != null && row.dataset.skill === name;
+      row.classList.toggle("selected-row", isSelected);
+      if (isSelected) row.setAttribute("aria-current", "true");
+      else row.removeAttribute("aria-current");
+      const btn = row.querySelector(".row-select");
+      if (btn) btn.setAttribute("aria-pressed", isSelected ? "true" : "false");
+    });
+  }
+
+  // Inline, in-page feedback in place of alert()/window dialogs. The
+  // element is a role="status" live region, so it is announced without
+  // stealing focus, and it is emptied (not just hidden) when cleared so
+  // it can never be re-announced as stale text.
+  function setFeedback(el, message, tone) {
+    if (!el) return;
+    if (!message) {
+      el.textContent = "";
+      el.className = "form-feedback";
+      el.hidden = true;
+      return;
+    }
+    el.textContent = message;
+    el.className = "form-feedback form-feedback-" + (tone === "error" ? "error" : "success");
+    el.hidden = false;
+  }
+
   async function fetchJson(url) {
     const res = await fetch(url, { credentials: "same-origin" });
     if (res.status === 401) {
@@ -258,6 +308,7 @@
   const runSkillEditorTitle = document.getElementById("run-skill-editor-title");
   const runSkillEditorBadge = document.getElementById("run-skill-editor-badge");
   const runSkillEditorContent = document.getElementById("run-skill-editor-content");
+  const runSkillNote = document.getElementById("run-skill-note");
   let runSkillsCache = [];
   let selectedRunSkillName = null;
 
@@ -279,9 +330,11 @@
     runSkillsBody.innerHTML = "";
     for (const s of runSkillsCache) {
       const tr = document.createElement("tr");
+      tr.dataset.skill = s.name;
 
       const nameTd = document.createElement("td");
-      nameTd.textContent = s.name;
+      nameTd.className = "row-select-cell";
+      nameTd.appendChild(rowSelectButton(s.name, () => openRunSkillEditor(s.name)));
       tr.appendChild(nameTd);
 
       const kindTd = document.createElement("td");
@@ -295,22 +348,17 @@
       statusTd.appendChild(badge);
       tr.appendChild(statusTd);
 
-      const actionTd = document.createElement("td");
-      const editBtn = document.createElement("button");
-      editBtn.type = "button";
-      editBtn.className = "btn-table-action";
-      editBtn.textContent = "Edit / override";
-      editBtn.addEventListener("click", () => openRunSkillEditor(s.name));
-      actionTd.appendChild(editBtn);
-      tr.appendChild(actionTd);
+      tr.addEventListener("click", () => openRunSkillEditor(s.name));
 
       runSkillsBody.appendChild(tr);
     }
+    markSelectedRow(runSkillsBody, selectedRunSkillName);
   }
 
   function openRunSkillEditor(name) {
     const s = runSkillsCache.find((x) => x.name === name);
     if (!s) return;
+    if (name !== selectedRunSkillName) setFeedback(runSkillNote, "");
     selectedRunSkillName = name;
     runSkillEditorTitle.textContent = name;
     runSkillEditorBadge.className = "badge " + (s.overridden ? "badge-override" : "badge-library");
@@ -319,6 +367,7 @@
       : "No override yet -- saving will create one for THIS RUN ONLY";
     runSkillEditorContent.value = s.content;
     runSkillEditor.hidden = false;
+    markSelectedRow(runSkillsBody, name);
   }
 
   document.getElementById("run-skill-save").addEventListener("click", async () => {
@@ -337,10 +386,12 @@
         }
       );
       if (!res.ok) throw new Error("save failed: " + res.status);
+      const name = selectedRunSkillName;
       await refreshRunSkills();
-      openRunSkillEditor(selectedRunSkillName);
+      openRunSkillEditor(name);
+      setFeedback(runSkillNote, "Saved an override for this run.", "success");
     } catch (err) {
-      alert("Failed to save override: " + err.message);
+      setFeedback(runSkillNote, "Failed to save override: " + err.message, "error");
     }
   });
 
@@ -355,16 +406,20 @@
         { method: "DELETE", credentials: "same-origin" }
       );
       if (!res.ok && res.status !== 404) throw new Error("revert failed: " + res.status);
+      const name = selectedRunSkillName;
       await refreshRunSkills();
-      openRunSkillEditor(selectedRunSkillName);
+      openRunSkillEditor(name);
+      setFeedback(runSkillNote, "Reverted to the library version.", "success");
     } catch (err) {
-      alert("Failed to revert override: " + err.message);
+      setFeedback(runSkillNote, "Failed to revert override: " + err.message, "error");
     }
   });
 
   document.getElementById("run-skill-close").addEventListener("click", () => {
     runSkillEditor.hidden = true;
+    setFeedback(runSkillNote, "");
     selectedRunSkillName = null;
+    markSelectedRow(runSkillsBody, null);
   });
 
   // -----------------------------------------------------------------
@@ -571,9 +626,11 @@
     for (const s of skills) {
       const tr = document.createElement("tr");
       tr.title = s.description || "";
+      tr.dataset.skill = s.name;
 
       const nameTd = document.createElement("td");
-      nameTd.textContent = s.name;
+      nameTd.className = "row-select-cell";
+      nameTd.appendChild(rowSelectButton(s.name, () => openSkillDetail(s.name)));
       tr.appendChild(nameTd);
 
       const kindTd = document.createElement("td");
@@ -590,6 +647,7 @@
       tr.addEventListener("click", () => openSkillDetail(s.name));
       skillsBody.appendChild(tr);
     }
+    markSelectedRow(skillsBody, selectedSkillName);
   }
 
   async function openSkillDetail(name) {
@@ -603,11 +661,14 @@
       skillDetailBadge.textContent = data.source;
       skillDetailDescription.textContent = data.description || "";
       skillDetailContent.value = data.content;
-      skillNote.textContent = "";
+      setFeedback(skillNote, "");
       document.getElementById("skill-delete").hidden = data.source !== "imported";
       skillDetail.hidden = false;
+      markSelectedRow(skillsBody, data.name);
     } catch (err) {
       console.error("failed to load skill", err);
+      skillDetailTitle.textContent = "Could not open this skill";
+      skillDetail.hidden = true;
     }
   }
 
@@ -622,10 +683,10 @@
       });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || "save failed: " + res.status);
-      skillNote.textContent = body.note || "Saved.";
       await refreshSkillsLibrary();
+      setFeedback(skillNote, body.note || "Saved.", "success");
     } catch (err) {
-      alert("Failed to save: " + err.message);
+      setFeedback(skillNote, "Failed to save: " + err.message, "error");
     }
   });
 
@@ -643,33 +704,125 @@
       }
       skillDetail.hidden = true;
       selectedSkillName = null;
+      skillDetailTitle.textContent = "Select a skill";
       await refreshSkillsLibrary();
     } catch (err) {
-      alert("Failed to delete: " + err.message);
+      setFeedback(skillNote, "Failed to delete: " + err.message, "error");
     }
   });
 
-  document.getElementById("import-skill-form").addEventListener("submit", async (ev) => {
+  // ---------------------------------------------------------------
+  // Import. Validation and result reporting are INLINE -- an alert() is
+  // modal, unstyled, unreachable by a screen reader until dismissed, and
+  // discards whatever the operator typed from view. Each field owns an
+  // error paragraph it already points at via aria-describedby, so the
+  // message is part of the field's accessible description; the form-level
+  // element is a role="status" live region for the outcome.
+  // ---------------------------------------------------------------
+  const importForm = document.getElementById("import-skill-form");
+  const importPanel = document.getElementById("import-skill-panel");
+  const importFeedback = document.getElementById("import-feedback");
+  const importName = document.getElementById("import-name");
+  const importKind = document.getElementById("import-kind");
+  const importDescription = document.getElementById("import-description");
+  const importContent = document.getElementById("import-content");
+
+  // Mirrors SKILL_NAME_PATTERN in console/server.js. Client-side checks are
+  // a courtesy only; the server re-validates and its error is surfaced the
+  // same way.
+  const SKILL_NAME_RE = /^[a-zA-Z0-9_.-]+$/;
+
+  function setFieldError(input, errorId, message) {
+    const errorEl = document.getElementById(errorId);
+    if (errorEl) {
+      errorEl.textContent = message || "";
+      errorEl.hidden = !message;
+    }
+    if (input) {
+      if (message) input.setAttribute("aria-invalid", "true");
+      else input.removeAttribute("aria-invalid");
+    }
+  }
+
+  function clearImportErrors() {
+    setFieldError(importName, "import-name-error", "");
+    setFieldError(importContent, "import-content-error", "");
+    setFeedback(importFeedback, "");
+  }
+
+  // Returns the first invalid field so focus can be moved to it, or null.
+  function validateImport(values) {
+    let firstInvalid = null;
+    if (!values.name) {
+      setFieldError(importName, "import-name-error", "Enter a name for the skill.");
+      firstInvalid = firstInvalid || importName;
+    } else if (!SKILL_NAME_RE.test(values.name)) {
+      setFieldError(
+        importName,
+        "import-name-error",
+        "Use only letters, numbers, dot, dash or underscore -- no spaces."
+      );
+      firstInvalid = firstInvalid || importName;
+    }
+    if (!values.content.trim()) {
+      setFieldError(importContent, "import-content-error", "Paste the skill's markdown content.");
+      firstInvalid = firstInvalid || importContent;
+    }
+    return firstInvalid;
+  }
+
+  importForm.addEventListener("submit", async (ev) => {
     ev.preventDefault();
-    const name = document.getElementById("import-name").value.trim();
-    const kind = document.getElementById("import-kind").value;
-    const description = document.getElementById("import-description").value.trim();
-    const content = document.getElementById("import-content").value;
+    clearImportErrors();
+    const values = {
+      name: importName.value.trim(),
+      kind: importKind.value,
+      description: importDescription.value.trim(),
+      content: importContent.value,
+    };
+    const firstInvalid = validateImport(values);
+    if (firstInvalid) {
+      setFeedback(importFeedback, "Check the highlighted fields and try again.", "error");
+      firstInvalid.focus();
+      return;
+    }
     try {
       const res = await fetch("/api/skills", {
         method: "POST",
+        // Required: the CSRF gate in server.js rejects a state-changing
+        // /api/ request without a JSON content type with 415.
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
-        body: JSON.stringify({ name, kind, description, content }),
+        body: JSON.stringify(values),
       });
-      const body = await res.json();
+      const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error || "import failed: " + res.status);
-      document.getElementById("import-skill-form").reset();
+      importForm.reset();
       await refreshSkillsLibrary();
-      openSkillDetail(name);
+      await openSkillDetail(values.name);
+      setFeedback(
+        importFeedback,
+        'Imported "' + values.name + '". It is now open in the panel on the right.',
+        "success"
+      );
     } catch (err) {
-      alert("Failed to import: " + err.message);
+      // A name collision is the one server-side failure that belongs on a
+      // specific field rather than only at form level.
+      if (/already exists/i.test(err.message)) {
+        setFieldError(importName, "import-name-error", "A skill with this name already exists.");
+        importName.focus();
+      }
+      setFeedback(importFeedback, "Could not import: " + err.message, "error");
     }
+  });
+
+  // Typing clears that field's error so a corrected value stops looking wrong.
+  importName.addEventListener("input", () => setFieldError(importName, "import-name-error", ""));
+  importContent.addEventListener("input", () => setFieldError(importContent, "import-content-error", ""));
+
+  // A closed panel must not keep announcing the previous outcome.
+  importPanel.addEventListener("toggle", () => {
+    if (!importPanel.open) clearImportErrors();
   });
 
   loadWhoami();
