@@ -786,6 +786,212 @@ app.delete("/api/sessions/:id/skills/:name", async (req, res) => {
 });
 
 // ---------------------------------------------------------------------
+// Session inbox (steer/question/info messages) -- read/write surface
+// over the on-disk format scripts/_mailbox.mjs owns. We reimplement the
+// same read/write logic here (rather than shelling out to _mailbox.mjs)
+// to avoid a child-process/arg-injection surface; file naming and JSON
+// shape are kept byte-compatible so `_mailbox.mjs list/reply` keep
+// working against files the API wrote, and vice versa.
+// ---------------------------------------------------------------------
+
+const INBOX_TYPES = ["steer", "question", "info"];
+const INBOX_FILENAME_PATTERN = /^[A-Za-z0-9_.-]+\.json$/;
+
+function inboxDir(id) {
+  return path.join(sessionDir(id), "inbox");
+}
+
+function inboxArchiveDir(id) {
+  return path.join(inboxDir(id), "archive");
+}
+
+function readJsonSafe(filePath) {
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    if (!raw.trim()) return null;
+    return JSON.parse(raw);
+  } catch (err) {
+    return null;
+  }
+}
+
+function writeJsonAtomic(filePath, obj) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + "\n");
+  fs.renameSync(tmp, filePath);
+}
+
+function listInboxMessages(id) {
+  const dir = inboxDir(id);
+  const archive = inboxArchiveDir(id);
+  const messages = [];
+
+  let pendingFiles = [];
+  try {
+    pendingFiles = fs.readdirSync(dir);
+  } catch (err) {
+    if (err.code !== "ENOENT") throw err;
+    pendingFiles = [];
+  }
+  for (const f of pendingFiles) {
+    if (!f.endsWith(".json")) continue;
+    const full = path.join(dir, f);
+    let stat;
+    try {
+      stat = fs.statSync(full);
+    } catch {
+      continue;
+    }
+    if (!stat.isFile()) continue; // skips the archive/ subdir
+    const msg = readJsonSafe(full);
+    if (!msg) continue;
+    messages.push({
+      filename: f,
+      type: msg.type,
+      text: msg.text,
+      ts: msg.ts,
+      reply: msg.reply || null,
+      replied_ts: msg.replied_ts || null,
+      archived: false,
+    });
+  }
+
+  let archivedFiles = [];
+  try {
+    archivedFiles = fs.readdirSync(archive);
+  } catch (err) {
+    if (err.code !== "ENOENT") throw err;
+    archivedFiles = [];
+  }
+  for (const f of archivedFiles) {
+    if (!f.endsWith(".json")) continue;
+    const full = path.join(archive, f);
+    let stat;
+    try {
+      stat = fs.statSync(full);
+    } catch {
+      continue;
+    }
+    if (!stat.isFile()) continue;
+    const msg = readJsonSafe(full);
+    if (!msg) continue;
+    messages.push({
+      filename: f,
+      type: msg.type,
+      text: msg.text,
+      ts: msg.ts,
+      reply: msg.reply || null,
+      replied_ts: msg.replied_ts || null,
+      archived: true,
+    });
+  }
+
+  messages.sort((a, b) => {
+    const ta = Date.parse(a.ts || "") || 0;
+    const tb = Date.parse(b.ts || "") || 0;
+    return ta - tb;
+  });
+
+  return messages;
+}
+
+app.get("/api/sessions/:id/inbox", async (req, res) => {
+  const id = req.params.id;
+  if (!SESSION_ID_PATTERN.test(id) || !isPathInsideRunsDir(sessionDir(id))) {
+    return res.status(400).json({ error: "invalid session id" });
+  }
+  try {
+    const messages = listInboxMessages(id);
+    res.json({ run_id: id, messages });
+  } catch (err) {
+    res.status(500).json({ error: "inbox read failed", detail: err.message });
+  }
+});
+
+app.post("/api/sessions/:id/inbox", async (req, res) => {
+  const id = req.params.id;
+  if (!SESSION_ID_PATTERN.test(id) || !isPathInsideRunsDir(sessionDir(id))) {
+    return res.status(400).json({ error: "invalid session id" });
+  }
+  const body = req.body || {};
+  const type = body.type === undefined || body.type === null || body.type === "" ? "steer" : body.type;
+  if (!INBOX_TYPES.includes(type)) {
+    return res.status(400).json({ error: "type must be one of steer|question|info" });
+  }
+  const text = body.text;
+  if (typeof text !== "string" || text.length === 0) {
+    return res.status(400).json({ error: "text (non-empty string) is required" });
+  }
+  if (text.length > 8000) {
+    return res.status(400).json({ error: "text exceeds 8000 characters" });
+  }
+
+  try {
+    const dir = inboxDir(id);
+    fs.mkdirSync(dir, { recursive: true });
+
+    const ts = new Date().toISOString();
+    const stamp = ts.replace(/[:.]/g, "-");
+    const rand = crypto.randomBytes(3).toString("hex");
+    const filename = `${stamp}-${type}-${rand}.json`;
+    const filePath = path.join(dir, filename);
+
+    const msg = { type, text, ts };
+    writeJsonAtomic(filePath, msg);
+
+    res.status(201).json({ ok: true, message: { filename, ...msg } });
+  } catch (err) {
+    res.status(500).json({ error: "inbox write failed", detail: err.message });
+  }
+});
+
+app.get("/api/sessions/:id/inbox/:filename", async (req, res) => {
+  const id = req.params.id;
+  const filename = req.params.filename;
+  if (!SESSION_ID_PATTERN.test(id) || !isPathInsideRunsDir(sessionDir(id))) {
+    return res.status(400).json({ error: "invalid session id" });
+  }
+  if (
+    !INBOX_FILENAME_PATTERN.test(filename) ||
+    filename.includes("..") ||
+    filename.includes("/") ||
+    filename.includes("\\")
+  ) {
+    return res.status(400).json({ error: "invalid filename" });
+  }
+
+  const pendingPath = path.join(inboxDir(id), filename);
+  const archivedPath = path.join(inboxArchiveDir(id), filename);
+  if (!isPathInsideRunsDir(pendingPath) || !isPathInsideRunsDir(archivedPath)) {
+    return res.status(400).json({ error: "invalid filename" });
+  }
+
+  try {
+    let msg = readJsonSafe(pendingPath);
+    let archived = false;
+    if (!msg) {
+      msg = readJsonSafe(archivedPath);
+      archived = true;
+    }
+    if (!msg) {
+      return res.status(404).json({ error: "message not found" });
+    }
+    res.json({
+      filename,
+      type: msg.type,
+      text: msg.text,
+      ts: msg.ts,
+      reply: msg.reply || null,
+      replied_ts: msg.replied_ts || null,
+      archived,
+    });
+  } catch (err) {
+    res.status(500).json({ error: "inbox read failed", detail: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------
 // Dashboard (authenticated, served after the global auth middleware ran)
 // ---------------------------------------------------------------------
 app.use(express.static(path.join(__dirname, "public"), { index: false }));
