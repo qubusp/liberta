@@ -1,7 +1,7 @@
 ---
 name: liberta
 description: Unattended long-running orchestration harness. Give it a goal and a project and it plans, dispatches fresh-context specialist subagents, independently verifies each result, and stops-and-notifies on a clear terminal condition. Pair with /loop for hands-free operation.
-argument-hint: "<goal text> [--project <path>] [--profile dev|research] | --resume <session-id>"
+argument-hint: "<goal text> [--project <path>] [--profile dev|research] | --resume <session-id> | status [<session-id>] [--all]"
 allowed-tools:
   - Task
   - Read
@@ -32,12 +32,12 @@ All bookkeeping lives outside the target project, under a global directory
 that is never committed:
 
 ```
-~/.claude/liberta-runs/index.json           {active_session_id, sessions:[{id, project_path, status}]}
+~/.claude/liberta-runs/index.json           {active_session_id, sessions:[{id, project_path, status, parent_session_id}]}
 ~/.claude/liberta-runs/<session-id>/
     goal.md          the goal, acceptance criteria, profile, budget, git-flow policy
     project.json      detected stack + verify commands for the target repo
     plan.json         the task board: [{id, role, wave, depends_on, verify, status, ...}]
-    state.json        {iteration, tokens_spent, wall_deadline, status, stuck_counter, notes}
+    state.json        {iteration, tokens_spent, wall_deadline, status, stuck_counter, notes, parent_session_id}
     ledger.csv        one row per completed task: id, role, model, outcome, tokens
     events.jsonl       append-only activity stream (see below)
     inbox/             steer/question/info messages dropped in from outside the run
@@ -69,6 +69,21 @@ status change so those two files never drift apart.
 
 ### Step 0 — pick a mode
 
+- Invocation is bare `status`, `--status`, or `/liberta` with no goal text
+  (optionally followed by `<session-id>` and/or `--all`): this is the
+  STATUS path, not a run. Execute
+  `node <repo>/scripts/_status.mjs [<session-id>] [--all]`, print its
+  output verbatim, and STOP. Nothing else in this file runs for this
+  invocation: no SETUP, no LOOP, no `Task()` dispatch, no wave generation,
+  no model call of any kind. `_status.mjs` only reads
+  `~/.claude/liberta-runs/` off disk; it is STRICTLY READ-ONLY and must
+  never be allowed to mutate `plan.json`, `state.json`, `index.json` or
+  `events.jsonl` — in particular, do NOT log a "status viewed" event for
+  this path, and do not use `--status` on `_log-event.mjs` (unrelated flag,
+  different script) to touch state as a side effect of answering. This is
+  the same discipline already applied to inbox `question` messages in the
+  LOOP below: answer from state on disk only, never spawn a subagent just
+  to report a table.
 - `--resume <session-id>` given, or `index.json.active_session_id` points at
   a `running` session: go to LOOP for that session.
 - Otherwise: this is a new goal, go to SETUP.
@@ -97,7 +112,14 @@ status change so those two files never drift apart.
    planner also writes the pre-registration (null hypothesis, holdout
    split, stopping rule) before any out-of-sample work happens.
 6. Write `state.json` (`iteration:0`, the budget copied from `goal.md`,
-   `status:"running"`) and register the session in `index.json`.
+   `status:"running"`) and register the session in `index.json`. Both files
+   must carry `parent_session_id`, and they must agree: `null` when this is
+   a fresh root run, or the mother run's session id when this session is a
+   fork/continuation of an existing one. `state.json` is authoritative and
+   the `index.json` entry is the convenience copy. Always set it at
+   creation time — a missing field reads as `null` (a root), so lineage
+   that is never written is lineage that is silently wrong. Never rely on
+   a later backfill to repair it.
 7. If `base_branch` is set, branch: `git -C <root> checkout -b
    liberta/<session-id> <base_branch>`. All work lands here, never directly on
    `base_branch`. First commit: `liberta: scaffold <session-id>` (skip if

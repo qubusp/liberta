@@ -192,6 +192,219 @@ files under `skills/`/`agents/` directly. This library is a management
 surface for browsing/editing/experimenting, not a second source of
 truth the harness consults.
 
+## Screenshots / visual evidence
+
+The dashboard and every `/api/*` route are auth-gated (see "Auth" above),
+so a screenshot of `/login` proves nothing about what a logged-in
+operator actually sees. Two scripts under `console/scripts/` exist so
+every visual/UI task can produce real, logged-in evidence the same way:
+
+- **`console/scripts/shot.mjs`** boots a console of its own (preferred
+  port 4999, credentials generated fresh for that one invocation) and
+  tears it back down on exit; logs in over HTTP to get
+  the real signed session cookie (reading the cookie name from
+  `console/auth.js` rather than guessing it); then drives the system
+  Google Chrome via `puppeteer-core` (no bundled-browser download) with
+  that cookie set, navigates to a path, and writes full-page PNGs at both
+  1440x900 and 390x844. It hard-fails, writing no PNG at all, unless the
+  page positively proves it is the authenticated view -- a false
+  "success" here would poison every later visual task.
+
+  ```
+  node console/scripts/shot.mjs \
+    --out ./shots --path / --label dashboard-home \
+    [--reduced-motion] [--script ./my-interaction.mjs] \
+    [--expect-selector '#some-marker']
+  ```
+
+  `--script <file.mjs>` is an ES module exporting `async function
+  run(page)`, executed after login + navigation and before the
+  screenshots -- e.g. to click into a panel or type a message before
+  capturing.
+
+  `--expect-selector <css>` **adds** a required CSS selector on top of the
+  default authenticated-view markers (see below); it does **not** replace
+  them. The requirement is `#sessions-table` AND `#whoami` AND every
+  selector you passed, ANDed in turn with the other conditions -- so the
+  flag can only ever narrow what counts as authenticated. Repeat it to
+  require several selectors. There is deliberately **no** flag that
+  replaces the defaults.
+
+  This used to be untrue, and the previous wording here -- which claimed
+  the flag overrides the default marker yet could not make the guard any
+  weaker -- was wrong in a way that mattered: `--expect-selector`
+  *replaced* the defaults, so a broad selector made the guard strictly
+  weaker. An auditor combined
+  `--expect-selector body` with a cookie-clearing `--script` that
+  navigated to `/logout`, and the tool exited 0 and wrote two PNGs of a
+  genuinely unauthenticated Express 404 page -- the 1440 one being a blank
+  white error page. Naming a chat-panel / pixel-art / mindmap marker is
+  the intended use of this flag; naming something broad is now harmless
+  rather than a bypass.
+
+  **Environment overrides.**
+
+  - `SHOT_PORT` (falling back to `PORT`, then `4999`) sets the preferred
+    port for the child console.
+  - `LIBERTA_CHROME_PATH` (falling back to `CHROME_PATH`) points at the
+    Chrome/Chromium binary. Without either, the macOS default
+    `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome` is
+    used.
+
+  **It always starts its own console, and cannot be shadowed by someone
+  else's.** The port was once hardcoded to `4999` and *any* listener
+  already there was reused, so a concurrent `shot.mjs` or an unrelated
+  console meant this tool screenshotted a **different** console and
+  certified it happily -- the evidence described the wrong tree.
+
+  The first fix for that was defeated, and how it was defeated is the
+  whole reason the current design looks the way it does. That version
+  spawned a real child, waited for the `listening on` line on the child's
+  own stdout, and logged in with a per-invocation random password -- and
+  an auditor still got two PNGs reading "EVIDENCE FORGED BY FOREIGN
+  SERVER" out of a plain default invocation, exit 0, empty stderr. Three
+  platform facts, each measured on macOS, combined:
+
+  - a free-port probe that binds `0.0.0.0:P` **succeeds** while another
+    process holds `127.0.0.1:P` or `[::1]:P`, so a loopback-only squatter
+    was reported as "port free";
+  - Node sets `SO_REUSEADDR`, so a wildcard bind and a specific bind of
+    the same port coexist -- the child really did start and really did
+    print its line;
+  - `localhost` resolves `::1` **before** `127.0.0.1`, and the kernel
+    routes to the most specific matching bind. So every request to
+    `http://localhost:4999` reached the squatter on `[::1]:4999`, never
+    the child.
+
+  The child's stdout line proves *the child started*. It does not prove
+  *traffic to the base URL reaches the child*. Three things now do:
+
+  - **Probe every reachable address.** A port counts as free only if
+    `127.0.0.1`, `::1` **and** `0.0.0.0` can all be bound; a refusal on
+    any one of them means it is taken, and an OS-assigned free port is
+    used instead.
+  - **One literal address, never a name.** The child is told to bind the
+    single address `127.0.0.1` via `LIBERTA_CONSOLE_HOST`, and the base
+    URL is built from that same literal. Name resolution leaves the trust
+    chain, the kernel refuses a second bind of exactly `127.0.0.1:P`, and
+    a foreign wildcard listener loses to the more specific bind -- so a
+    child that bound successfully is the only thing that can answer the
+    address the tool talks to.
+  - **A credential proof that actually proves something.** A 302 carrying
+    a correctly *named* cookie is trivially forgeable: both are chosen by
+    whoever answers the socket, and a hostile server that accepts any
+    password and sets a `liberta_console_session` cookie satisfied the old
+    check completely. The tool now requires that a deliberately **wrong**
+    password is **rejected**, and that the cookie issued for the right one
+    **verifies under the HMAC secret this process generated seconds
+    earlier** (`verifySessionCookie` from `auth.js`). Forging that needs
+    the secret, so this holds even if the routing argument above were
+    somehow wrong on some other platform.
+
+  If any of it fails the run aborts loudly, rather than capturing a
+  server it cannot prove is its own.
+
+  **Credentials are per-invocation.** They used to be a pair of fixed
+  strings committed in a public repo, while the console bound *all*
+  interfaces by default. During a screenshot run that made the real console -- real
+  `console/data/liberta.sqlite`, real `~/.claude/liberta-runs` -- reachable
+  on `0.0.0.0`, with a *published* signing secret, so a LAN-adjacent
+  attacker could forge a valid session cookie without knowing the
+  password. Both values are now `crypto.randomBytes` per run and never
+  logged. The follow-up this section used to list as open -- that the
+  child still bound every interface, because the bind address lived in
+  `server.js` where `shot.mjs` could not reach it -- is closed:
+  `server.js` honours `LIBERTA_CONSOLE_HOST`, and `shot.mjs` sets it to
+  `127.0.0.1`, so the ephemeral child sits on loopback only for the length
+  of the run.
+
+  **Stale evidence is cleared up front.** Cleanup used to delete only the
+  PNGs written by the current invocation, so a run that failed at the
+  first checkpoint left the *previous* run's `<label>-1440.png` sitting at
+  exactly the path a downstream task reads -- stale evidence surviving a
+  non-zero exit. `shot.mjs` now deletes any pre-existing PNG at the paths
+  it is about to write, before it does anything else.
+
+  **A known, nondeterministic screenshot-time failure.** During a
+  `fullPage` capture puppeteer transiently drives `innerWidth` to 1 while
+  it resizes for the full-page shot. On a page with a narrow-viewport
+  `matchMedia` listener that can fire the listener mid-capture and surface
+  as a roughly 30-second hang ending in
+  `Page.captureScreenshot timed out`. It **fails closed** -- non-zero
+  exit, no PNG -- and it is nondeterministic, so a retry usually
+  succeeds. Do not mistake it for the tool hanging, and do not "fix" it by
+  weakening the guard.
+
+  **The auth guard is an allowlist, not a blocklist -- deliberately.**
+  The original guard rejected a capture only when `input[name=password]`
+  was present, and that blocklist was defeated: a `--script` hook that
+  cleared cookies and navigated to `/api/sessions` produced the plain
+  body `{"error":"unauthorized"}`, which has no password input, so the
+  tool exited 0 and wrote two real PNGs of an *unauthenticated* page. Any
+  blocklist has this shape of hole, because "not the login form" is not
+  the same claim as "the authenticated dashboard". A capture is therefore
+  now valid only if **all** of the following hold, checked in the live
+  page:
+
+  - the default authenticated-view markers are present in the DOM --
+    `#sessions-table` **and** `#whoami`, which exist only in
+    `console/public/dashboard.html` and are served behind auth. These are
+    always required and cannot be switched off from the command line;
+  - every `--expect-selector` the caller passed is *also* present;
+  - `document.contentType` is `text/html`, so a JSON or plain-text error
+    body fails before the selectors are even consulted;
+  - the page URL is same-origin with the harness base URL
+    (`http://localhost:<the port this run chose>`);
+  - `input[name=password]` is absent (the old check, kept but now
+    subordinate).
+
+  These are asserted after navigation, after the `--script` hook, and --
+  decisively -- immediately before *each* of the two screenshot writes,
+  since the viewport resize or a navigation the script scheduled can
+  change the page in between. On failure the message names which
+  condition failed plus the actual URL and contentType, and every PNG at
+  this label/out-dir's paths is deleted, so a failed run never leaves
+  partial or stale evidence for a later task to pick up.
+
+- **`console/scripts/probes/auth-bypass.mjs`** is the exact bypass above,
+  committed as a permanent regression probe: a `--script` module that
+  clears all cookies and navigates to `/api/sessions`. Re-run it whenever
+  the guard is touched; it MUST exit non-zero, leave zero PNGs, and fail
+  specifically on the **contentType** condition (`document.contentType is
+  "application/json"`). It builds that URL from the page's own origin
+  rather than hardcoding one: it used to target a literal
+  `http://localhost:4999/api/sessions`, which after the port became
+  dynamic pointed at nothing this run started -- so it still failed, but
+  on a connection error instead of the condition it exists to exercise. A
+  regression test that fails for the wrong reason is not testing
+  anything.
+
+  ```
+  rm -rf /tmp/shot-bypass
+  node console/scripts/shot.mjs --label bypass --out /tmp/shot-bypass \
+    --script console/scripts/probes/auth-bypass.mjs
+  echo "exit=$?"          # must be non-zero
+  ls /tmp/shot-bypass/*.png | wc -l   # must be 0
+  ```
+
+- **`console/scripts/fixture-sessions.mjs`** writes (`create`) and
+  removes (`clean`) four throwaway session-store trees under
+  `~/.claude/liberta-runs/`, shaped like `console/sync.js` expects
+  (`state.json`, `plan.json`, `events.jsonl`, `goal.md`), one each in
+  `running` / `done` / `failed` / `idle` status, and registers/deregisters
+  them in `~/.claude/liberta-runs/index.json` so they show up in the
+  dashboard's session list like real runs -- useful for a single
+  screenshot that shows all four dashboard states at once. Every fixture
+  id is prefixed `zz-fixture-`; `clean` only ever touches directories and
+  index entries with that exact prefix, is idempotent, and never modifies
+  or removes any other session (including the live run these scripts
+  ship in).
+
+  ```
+  node console/scripts/fixture-sessions.mjs create
+  node console/scripts/fixture-sessions.mjs clean
+  ```
+
 ## Deliberately minimal -- not for public exposure
 
 This is built for local, single-operator use: you, on your own machine or
