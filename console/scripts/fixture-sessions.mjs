@@ -55,10 +55,29 @@ function isFixtureId(id) {
   return typeof id === "string" && id.startsWith(FIXTURE_PREFIX);
 }
 
+// Reject any id containing a path separator, or the substring `..`
+// anywhere in it. This must run BEFORE the prefix check: an id like
+// `zz-fixture-../real-session` passes startsWith(FIXTURE_PREFIX) but
+// normalises to a path outside the intended fixture directory, so the
+// prefix check alone is not enough. Checking for the raw substring `..`
+// (rather than only a whole `..` path segment) is deliberately
+// conservative: it also refuses ids like `zz-fixture-..`, which do not
+// normalise anywhere outside RUNS_DIR today but are needlessly
+// suspicious for a directory name that is only ever one of four
+// hardcoded fixture ids.
+function hasPathEscape(id) {
+  if (typeof id !== "string") return true;
+  if (id.includes("/") || id.includes("\\")) return true;
+  return id.includes("..");
+}
+
 // Defense in depth: never resolve a path outside RUNS_DIR, and never act
 // on a directory name that isn't the fixture prefix, no matter what
 // callers pass in.
 function fixtureDir(id) {
+  if (hasPathEscape(id)) {
+    throw new Error(`refusing to touch id containing a path separator or ".." segment: "${id}"`);
+  }
   if (!isFixtureId(id)) {
     throw new Error(`refusing to touch non-fixture id "${id}"`);
   }
@@ -118,6 +137,20 @@ async function readIndexOrThrow() {
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || !Array.isArray(parsed.sessions)) {
     throw new CorruptIndexError('it does not have the expected shape ({ active_session_id, sessions: [] })');
+  }
+  // Per-entry validation: every element of `sessions` must be an object
+  // with a string `id`, or we cannot safely distinguish a fixture entry
+  // from a non-fixture one (isFixtureId would silently treat a malformed
+  // entry as non-fixture, but a corrupt registry should abort loudly
+  // rather than be guessed at). Well-formed-but-unknown entries are still
+  // preserved verbatim elsewhere in this file -- this only rejects
+  // malformed elements.
+  for (const entry of parsed.sessions) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry) || typeof entry.id !== "string") {
+      throw new CorruptIndexError(
+        "the \"sessions\" array contains an entry that is not an object with a string \"id\""
+      );
+    }
   }
   return parsed;
 }
