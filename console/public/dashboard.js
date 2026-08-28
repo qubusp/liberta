@@ -203,25 +203,39 @@
     if (activeDetailTab === "chat") {
       await refreshChat();
     }
+    // Gated exactly like refreshRunSkills/refreshChat: no /api/sessions/graph
+    // traffic at all while the mindmap view is closed.
+    if (mindmapActive) {
+      await refreshMindmap();
+    }
   }
 
   // -----------------------------------------------------------------
   // Top-level nav: Runs vs Skills library
   // -----------------------------------------------------------------
-  const runsView = document.getElementById("runs-view");
-  const skillsView = document.getElementById("skills-view");
   const topbarTitle = document.getElementById("topbar-title");
-  const NAV_TITLES = { "runs-view": "Runs", "skills-view": "Skills library" };
+  const NAV_TITLES = {
+    "runs-view": "Runs",
+    "mindmap-view": "Session mindmap",
+    "skills-view": "Skills library",
+  };
   document.querySelectorAll(".nav-tab").forEach((btn) => {
     btn.addEventListener("click", () => {
       document.querySelectorAll(".nav-tab").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
       const target = btn.dataset.view;
-      runsView.hidden = target !== "runs-view";
-      skillsView.hidden = target !== "skills-view";
+      // Every top-level view is hidden except the target, so adding a
+      // view only means adding its markup + a NAV_TITLES entry.
+      document.querySelectorAll("main.view").forEach((view) => {
+        view.hidden = view.id !== target;
+      });
       if (topbarTitle) topbarTitle.textContent = NAV_TITLES[target] || "";
+      mindmapActive = target === "mindmap-view";
       if (target === "skills-view") {
         refreshSkillsLibrary();
+      }
+      if (mindmapActive) {
+        refreshMindmap();
       }
     });
   });
@@ -671,6 +685,360 @@
       alert("Failed to import: " + err.message);
     }
   });
+
+  // -----------------------------------------------------------------
+  // Session mindmap: the whole run store as a lineage graph.
+  //
+  // Data comes only from GET /api/sessions/graph (t10); this module does
+  // no derivation of its own beyond LAYOUT. Nodes are real <button>s
+  // absolutely positioned over an <svg> that carries only the edges, so
+  // the graph is keyboard-reachable and every label goes through
+  // textContent (ids, task titles and event summaries are read off disk
+  // and are not trusted).
+  //
+  // Re-render UPDATES nodes in place -- a full rebuild each poll would
+  // steal keyboard focus from whichever node the operator is on.
+  // -----------------------------------------------------------------
+  const NODE_W = 236;
+  const NODE_H = 152;
+  const GAP_X = 28;
+  const GAP_Y = 76;
+  const CANVAS_PAD = 12;
+  const MAX_DEPTH = 64;
+
+  const mindmapCanvas = document.getElementById("mindmap-canvas");
+  const mindmapEdgesSvg = document.getElementById("mindmap-edges");
+  const mindmapNodesLayer = document.getElementById("mindmap-nodes");
+  const mindmapList = document.getElementById("mindmap-list");
+  const mindmapEmpty = document.getElementById("mindmap-empty");
+  const mindmapErrorEl = document.getElementById("mindmap-error");
+  const mindmapHideFixtures = document.getElementById("mindmap-hide-fixtures");
+
+  let mindmapActive = false;
+  let mindmapGraph = { nodes: [], edges: [] };
+  // id -> { el, parts } for in-place updates.
+  const mindmapNodeEls = new Map();
+
+  function mindmapVisibleNodes() {
+    const nodes = Array.isArray(mindmapGraph.nodes) ? mindmapGraph.nodes : [];
+    if (mindmapHideFixtures && mindmapHideFixtures.checked) {
+      return nodes.filter((n) => !n.is_fixture);
+    }
+    return nodes;
+  }
+
+  // Lineage depth. Walks the parent chain with an EXPLICIT visited set
+  // (and a hard cap) so a self-parent or an a->b->a cycle can never hang
+  // the browser -- it just stops and treats the node as a root.
+  function mindmapDepth(node, byId) {
+    let depth = 0;
+    const seen = new Set([node.id]);
+    let cur = node;
+    while (depth < MAX_DEPTH) {
+      const parentId = cur.parent_session_id;
+      if (!parentId || parentId === cur.id) break;
+      if (!byId.has(parentId) || seen.has(parentId)) break;
+      seen.add(parentId);
+      cur = byId.get(parentId);
+      depth += 1;
+    }
+    return depth;
+  }
+
+  // Depth-first order from every root-ish node, so children sit near
+  // their mother. MULTIPLE ROOTS ARE THE NORM. Anything not reachable
+  // from a root (i.e. a member of a cycle) is emitted afterwards, so no
+  // node is ever dropped from the drawing.
+  function mindmapOrder(nodes, byId) {
+    const children = new Map();
+    for (const n of nodes) {
+      const p = n.parent_session_id;
+      if (p && p !== n.id && byId.has(p)) {
+        if (!children.has(p)) children.set(p, []);
+        children.get(p).push(n.id);
+      }
+    }
+    const visited = new Set();
+    const order = [];
+    const walk = (startId) => {
+      const stack = [startId];
+      while (stack.length > 0) {
+        const id = stack.pop();
+        if (visited.has(id)) continue;
+        visited.add(id);
+        const node = byId.get(id);
+        if (node) order.push(node);
+        const kids = children.get(id) || [];
+        for (let i = kids.length - 1; i >= 0; i -= 1) stack.push(kids[i]);
+      }
+    };
+    for (const n of nodes) {
+      const p = n.parent_session_id;
+      const rootish = !p || p === n.id || !byId.has(p);
+      if (rootish) walk(n.id);
+    }
+    for (const n of nodes) {
+      if (!visited.has(n.id)) walk(n.id);
+    }
+    return order;
+  }
+
+  function mindmapLayout(nodes) {
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+    const order = mindmapOrder(nodes, byId);
+    const colByDepth = new Map();
+    const positions = new Map();
+    let maxCol = 0;
+    let maxDepth = 0;
+    for (const node of order) {
+      const depth = mindmapDepth(node, byId);
+      const col = colByDepth.get(depth) || 0;
+      colByDepth.set(depth, col + 1);
+      if (col > maxCol) maxCol = col;
+      if (depth > maxDepth) maxDepth = depth;
+      positions.set(node.id, {
+        depth,
+        x: CANVAS_PAD + col * (NODE_W + GAP_X),
+        y: CANVAS_PAD + depth * (NODE_H + GAP_Y),
+      });
+    }
+    return {
+      order,
+      byId,
+      positions,
+      width: CANVAS_PAD * 2 + (maxCol + 1) * NODE_W + maxCol * GAP_X,
+      height: CANVAS_PAD * 2 + (maxDepth + 1) * NODE_H + maxDepth * GAP_Y,
+    };
+  }
+
+  function mindmapLineageText(node, byId) {
+    const parentId = node.parent_session_id;
+    if (!parentId) return "root session";
+    if (parentId === node.id) return "child of itself (anomalous lineage)";
+    if (!byId.has(parentId)) return "child of " + parentId + " (not in the store)";
+    return "child of " + parentId;
+  }
+
+  function mindmapTasksText(node) {
+    const tasks = Array.isArray(node.in_flight_tasks) ? node.in_flight_tasks : [];
+    if (tasks.length === 0) return "no tasks in flight";
+    return (
+      "in flight: " +
+      tasks
+        .map((t) => {
+          const id = t && t.id != null ? String(t.id) : "?";
+          const title = t && t.title ? " " + t.title : "";
+          return id + title;
+        })
+        .join(", ")
+    );
+  }
+
+  function mindmapCountsText(node) {
+    const c = node.task_counts || {};
+    const wave = node.current_wave != null ? "wave " + node.current_wave : "no wave";
+    return (
+      wave +
+      " · " +
+      (c.done || 0) +
+      "/" +
+      (c.total || 0) +
+      " done · " +
+      (c.pending || 0) +
+      " pending · " +
+      (c.blocked || 0) +
+      " blocked · " +
+      (c.failed || 0) +
+      " failed"
+    );
+  }
+
+  function createMindmapNodeEl(id) {
+    const el = document.createElement("button");
+    el.type = "button";
+    el.className = "mindmap-node";
+    el.dataset.sessionId = id;
+
+    const head = document.createElement("span");
+    head.className = "mindmap-node-id";
+    el.appendChild(head);
+
+    const badges = document.createElement("span");
+    badges.className = "mindmap-node-badges";
+    el.appendChild(badges);
+
+    const meta = document.createElement("span");
+    meta.className = "mindmap-node-meta";
+    el.appendChild(meta);
+
+    const tasks = document.createElement("span");
+    tasks.className = "mindmap-node-tasks";
+    el.appendChild(tasks);
+
+    const lineage = document.createElement("span");
+    lineage.className = "mindmap-node-lineage";
+    el.appendChild(lineage);
+
+    // Reuses the dashboard's own selection path; a native <button> gives
+    // Enter/Space and tab order for free.
+    el.addEventListener("click", () => {
+      selectSession(el.dataset.sessionId);
+      mindmapMarkSelected();
+    });
+
+    const entry = { el, head, badges, meta, tasks, lineage };
+    mindmapNodeEls.set(id, entry);
+    mindmapNodesLayer.appendChild(el);
+    return entry;
+  }
+
+  function mindmapBadge(parent, text, cls) {
+    const span = document.createElement("span");
+    span.className = "badge mindmap-badge " + cls;
+    span.textContent = text;
+    parent.appendChild(span);
+  }
+
+  function mindmapMarkSelected() {
+    mindmapNodeEls.forEach((entry, id) => {
+      entry.el.classList.toggle("mindmap-node-selected", id === selectedSessionId);
+      entry.el.setAttribute("aria-pressed", id === selectedSessionId ? "true" : "false");
+    });
+  }
+
+  function updateMindmapNode(entry, node, byId) {
+    entry.head.textContent = node.id;
+
+    entry.badges.textContent = "";
+    mindmapBadge(entry.badges, node.status || "unknown", statusClass(node.status));
+    if (node.is_active) mindmapBadge(entry.badges, "active", "mindmap-badge-active");
+    if (node.is_fixture) mindmapBadge(entry.badges, "fixture", "mindmap-badge-fixture");
+    if (node.degraded) {
+      const sources = Array.isArray(node.degraded_sources) ? node.degraded_sources : [];
+      mindmapBadge(
+        entry.badges,
+        sources.length > 0 ? "degraded: " + sources.join(", ") : "degraded",
+        "mindmap-badge-degraded"
+      );
+    }
+
+    entry.meta.textContent = mindmapCountsText(node);
+    entry.tasks.textContent = mindmapTasksText(node);
+    entry.lineage.textContent = mindmapLineageText(node, byId);
+    entry.el.classList.toggle("mindmap-node-fixture", !!node.is_fixture);
+    entry.el.classList.toggle("mindmap-node-degraded", !!node.degraded);
+    entry.el.dataset.status = statusSlug(node.status);
+  }
+
+  function renderMindmapEdges(layout, visibleIds) {
+    const edges = Array.isArray(mindmapGraph.edges) ? mindmapGraph.edges : [];
+    // Edges carry no focus and no text, so rebuilding them each tick is
+    // safe (unlike the nodes, which are updated in place).
+    mindmapEdgesSvg
+      .querySelectorAll(".mindmap-edge")
+      .forEach((line) => line.remove());
+    for (const edge of edges) {
+      if (!edge || !visibleIds.has(edge.from) || !visibleIds.has(edge.to)) continue;
+      const from = layout.positions.get(edge.from);
+      const to = layout.positions.get(edge.to);
+      if (!from || !to) continue;
+      const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      line.setAttribute("class", "mindmap-edge");
+      line.setAttribute("x1", String(from.x + NODE_W / 2));
+      line.setAttribute("y1", String(from.y + NODE_H));
+      line.setAttribute("x2", String(to.x + NODE_W / 2));
+      line.setAttribute("y2", String(to.y - 6));
+      line.setAttribute("marker-end", "url(#mindmap-arrow)");
+      line.dataset.from = edge.from;
+      line.dataset.to = edge.to;
+      mindmapEdgesSvg.appendChild(line);
+    }
+  }
+
+  // The accessible text alternative: an SVG-and-divs drawing conveys
+  // nothing to a screen reader, so the same lineage is also a plain list.
+  function renderMindmapList(layout) {
+    mindmapList.textContent = "";
+    for (const node of layout.order) {
+      const li = document.createElement("li");
+      li.className = "mindmap-list-item";
+
+      const idEl = document.createElement("strong");
+      idEl.textContent = node.id;
+      li.appendChild(idEl);
+
+      const detail = document.createElement("span");
+      detail.className = "mindmap-list-detail";
+      const bits = [
+        "status " + (node.status || "unknown"),
+        mindmapCountsText(node),
+        mindmapTasksText(node),
+        mindmapLineageText(node, layout.byId),
+      ];
+      if (node.is_fixture) bits.push("fixture session");
+      if (node.degraded) bits.push("degraded (unreadable session files)");
+      detail.textContent = " -- " + bits.join(" -- ");
+      li.appendChild(detail);
+
+      mindmapList.appendChild(li);
+    }
+  }
+
+  function renderMindmap() {
+    const nodes = mindmapVisibleNodes();
+    mindmapEmpty.hidden = nodes.length > 0;
+    mindmapCanvas.hidden = nodes.length === 0;
+
+    const visibleIds = new Set(nodes.map((n) => n.id));
+    // Drop elements for sessions that are gone (or filtered out); every
+    // surviving element is UPDATED, never recreated, so focus survives.
+    mindmapNodeEls.forEach((entry, id) => {
+      if (!visibleIds.has(id)) {
+        entry.el.remove();
+        mindmapNodeEls.delete(id);
+      }
+    });
+
+    const layout = mindmapLayout(nodes);
+    mindmapCanvas.style.width = layout.width + "px";
+    mindmapCanvas.style.height = layout.height + "px";
+    mindmapEdgesSvg.setAttribute("width", String(layout.width));
+    mindmapEdgesSvg.setAttribute("height", String(layout.height));
+    mindmapEdgesSvg.setAttribute("viewBox", "0 0 " + layout.width + " " + layout.height);
+
+    for (const node of layout.order) {
+      const entry = mindmapNodeEls.get(node.id) || createMindmapNodeEl(node.id);
+      const pos = layout.positions.get(node.id);
+      entry.el.style.left = pos.x + "px";
+      entry.el.style.top = pos.y + "px";
+      updateMindmapNode(entry, node, layout.byId);
+    }
+
+    renderMindmapEdges(layout, visibleIds);
+    renderMindmapList(layout);
+    mindmapMarkSelected();
+  }
+
+  async function refreshMindmap() {
+    try {
+      const data = await fetchJson("/api/sessions/graph");
+      if (!data) return; // 401 -> fetchJson already redirected to /login
+      mindmapGraph = {
+        nodes: Array.isArray(data.nodes) ? data.nodes : [],
+        edges: Array.isArray(data.edges) ? data.edges : [],
+      };
+      mindmapErrorEl.hidden = true;
+      renderMindmap();
+    } catch (err) {
+      // Slow/failed/malformed responses show an explicit error state --
+      // never a silently blank canvas, and never an unhandled rejection.
+      mindmapErrorEl.hidden = false;
+    }
+  }
+
+  if (mindmapHideFixtures) {
+    mindmapHideFixtures.addEventListener("change", () => renderMindmap());
+  }
 
   loadWhoami();
   tick();

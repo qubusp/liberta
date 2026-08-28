@@ -23,6 +23,10 @@
           <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
           <span class="nav-tab-label">Runs</span>
         </button>
+        <button type="button" class="nav-tab" data-view="mindmap-view">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 3v4M6 21v-4m12 4v-4M6 17h12v-4H6v4zM12 7v6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><rect x="9" y="1.5" width="6" height="4" rx="1" stroke="currentColor" stroke-width="1.6"/></svg>
+          <span class="nav-tab-label">Session mindmap</span>
+        </button>
         <button type="button" class="nav-tab" data-view="skills-view">
           <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 3l2.5 5.5L20 9l-4 4 1 6-5-3-5 3 1-6-4-4 5.5-.5L12 3z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
           <span class="nav-tab-label">Skills library</span>
@@ -127,6 +131,53 @@
             </div>
           </section>
         </div>
+      </main>
+
+      <main id="mindmap-view" class="view view-content" hidden>
+        <section class="card mindmap-card">
+          <div class="card-header">
+            <h2 class="card-title">Session mindmap</h2>
+          </div>
+          <p class="hint">
+            Every session in the run store, laid out by lineage: mother
+            sessions on top, the sessions forked from them below. Select a
+            node to make that session the selected run in the dashboard.
+          </p>
+          <div class="mindmap-controls">
+            <label class="mindmap-toggle">
+              <input type="checkbox" id="mindmap-hide-fixtures" />
+              Hide fixture runs (<code>zz-fixture-</code>)
+            </label>
+          </div>
+
+          <p id="mindmap-empty" class="hint mindmap-empty" hidden>
+            No sessions in the run store yet.
+          </p>
+          <p id="mindmap-error" class="hint mindmap-error" hidden>
+            Could not load the session graph.
+          </p>
+
+          <div class="mindmap-viewport">
+          <div id="mindmap-canvas" class="mindmap-canvas">
+            <svg id="mindmap-edges" class="mindmap-edges" aria-hidden="true" focusable="false">
+              <defs>
+                <marker id="mindmap-arrow" viewBox="0 0 10 10" refX="9" refY="5"
+                        markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                  <path d="M0 0 L10 5 L0 10 z" fill="#8a839c" />
+                </marker>
+              </defs>
+            </svg>
+            <div id="mindmap-nodes" class="mindmap-nodes"></div>
+          </div>
+          </div>
+
+          <h3 class="card-subtitle">Lineage (text alternative)</h3>
+          <p class="hint">
+            The same graph as a list, for screen readers and for anyone who
+            cannot see the drawing above.
+          </p>
+          <ul id="mindmap-list" class="mindmap-list"></ul>
+        </section>
       </main>
 
       <main id="skills-view" class="view view-content" hidden>
