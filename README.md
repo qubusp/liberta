@@ -1,0 +1,71 @@
+# Linda
+
+An unattended, long-running orchestration harness for Claude Code. Give it a
+goal and a project, and it keeps a thin controller loop alive on disk,
+farming every real unit of work out to fresh-context specialist subagents,
+double-checking each one independently before it counts as done, and
+stopping (with a notification) on a clear terminal condition instead of
+silently running forever or claiming victory early.
+
+MIT licensed — use it, fork it, sell it, whatever. See [LICENSE](LICENSE).
+
+## Why
+
+Long-horizon autonomous coding sessions fail in a small number of
+predictable ways: the agent tries to do everything in one giant turn, its
+context fills up and it loses the plot, it leaves work half-finished because
+nothing forces it to check, or it declares success without real evidence
+that anything passed. Linda's structure exists specifically to close off
+each of those:
+
+- **One task, one fresh subagent.** The controller (`skills/linda`) never
+  implements anything itself — it reads a task off a plan, hands it to the
+  right specialist, and reads back a verdict. Context never accumulates
+  past a thin bookkeeping layer.
+- **Independent verification.** A task is not "done" until a second,
+  separate agent — one that did not write the change — reproduces the
+  evidence that it works.
+- **Durable state on disk.** Plan, progress, budget, and an append-only
+  event log live in a session store outside the target repo, so a run
+  survives a context reset, a machine sleep, or a crash and picks up
+  exactly where it left off.
+- **A hard budget and explicit stop conditions.** Every run has a maximum
+  iteration count, token budget, and wall-clock deadline. When any of them
+  trips, or the plan completes, or progress stalls for several iterations
+  in a row, the run stops and notifies rather than grinding on.
+
+## Layout
+
+```
+skills/linda/SKILL.md   the controller — a Claude Code skill, invoked as /linda "<goal>"
+agents/*.md              the specialist roster (planner, builder, auditor, qa, ...)
+scripts/*.mjs            session-store helpers: event log, message inbox
+scripts/wave-exec.js     runs one wave of a plan's tasks concurrently, in isolated worktrees
+console/                 a small authenticated web UI showing live session status
+```
+
+## Installing the harness into Claude Code
+
+```
+cp -r skills/linda   ~/.claude/skills/linda
+cp -r agents/*        ~/.claude/agents/
+```
+
+Then from any Claude Code session: `/linda "<goal>" --project <path>`.
+
+## The console
+
+`console/` is a small Node/Express app that reads the session store
+(`~/.claude/linda-runs/`) and shows, live, which sessions exist, which one
+is active, its current task board, and a tail of its event stream — the
+"which session is working" view. It sits behind a login (see
+`console/README.md`) since the session store can contain repo paths, task
+descriptions, and other detail you may not want exposed to anyone who finds
+the URL.
+
+```
+cd console
+npm install
+LINDA_CONSOLE_PASSWORD='pick something' npm start
+# → http://localhost:4177
+```

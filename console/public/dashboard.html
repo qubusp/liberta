@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Linda Console</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <h1>Linda Console</h1>
+    <form method="POST" action="/logout"><button class="logout" type="submit">Log out</button></form>
+  </header>
+
+  <main>
+    <section class="sessions-panel">
+      <h2>Sessions</h2>
+      <table id="sessions-table">
+        <thead>
+          <tr><th>Session</th><th>Project</th><th>Status</th><th>Active</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section class="detail-panel">
+      <h2 id="detail-title">Select a session</h2>
+
+      <h3>Task board</h3>
+      <table id="tasks-table">
+        <thead>
+          <tr><th>ID</th><th>Role</th><th>Wave</th><th>Status</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+
+      <h3>Event log (tail)</h3>
+      <pre id="events-log"></pre>
+    </section>
+  </main>
+
+  <script src="/dashboard.js"></script>
+</body>
+</html>

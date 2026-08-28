@@ -1,0 +1,74 @@
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #0f1216;
+  color: #e6e6e6;
+  margin: 0;
+}
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  background: #1a1f27;
+  border-bottom: 1px solid #262c36;
+}
+header h1 { font-size: 1.1rem; margin: 0; color: #9fb3ff; }
+button.logout {
+  background: transparent;
+  color: #aaa;
+  border: 1px solid #333;
+  padding: 0.4rem 0.8rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+button.logout:hover { color: #fff; border-color: #666; }
+
+main {
+  display: grid;
+  grid-template-columns: 380px 1fr;
+  gap: 1rem;
+  padding: 1.5rem;
+}
+section {
+  background: #161a21;
+  border: 1px solid #232833;
+  border-radius: 10px;
+  padding: 1rem 1.2rem;
+}
+h2 { font-size: 0.95rem; margin: 0 0 0.8rem; color: #9fb3ff; }
+h3 { font-size: 0.85rem; margin: 1.2rem 0 0.5rem; color: #9fb3ff; }
+
+table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid #232833; }
+th { color: #888; font-weight: 600; }
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: #1e232c; }
+
+.status-pill {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.status-running, .status-in_progress { background: #1c3a5e; color: #74c0fc; }
+.status-done, .status-completed, .status-succeeded { background: #1e3a2a; color: #69db7c; }
+.status-failed, .status-error, .status-blocked { background: #3a1e1e; color: #ff8787; }
+.status-pending, .status-queued, .status-waiting { background: #3a341e; color: #ffd43b; }
+.status-unknown { background: #2a2a2a; color: #aaa; }
+
+#events-log {
+  background: #0b0d10;
+  border: 1px solid #232833;
+  border-radius: 6px;
+  padding: 0.8rem;
+  max-height: 420px;
+  overflow-y: auto;
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.active-yes { color: #69db7c; font-weight: 600; }
+.active-no { color: #555; }
