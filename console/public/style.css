@@ -1388,3 +1388,147 @@ button.logout {
     padding: var(--space-3);
   }
 }
+
+/* =========================================================================
+   Session mindmap (t11 -- structure/layout only; t12 owns the visual pass)
+   Nodes are absolutely-positioned buttons over an SVG that carries only
+   the lineage edges, so the graph stays keyboard-reachable.
+   ========================================================================= */
+.mindmap-card {
+  padding: var(--space-5);
+}
+
+.mindmap-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin: var(--space-3) 0;
+}
+
+.mindmap-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.mindmap-viewport {
+  overflow: auto;
+  max-width: 100%;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface-alt);
+}
+
+.mindmap-canvas {
+  position: relative;
+  min-width: 100%;
+}
+
+.mindmap-edges {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.mindmap-edge {
+  stroke: #8a839c;
+  stroke-width: 1.5;
+  fill: none;
+}
+
+.mindmap-nodes {
+  position: relative;
+}
+
+.mindmap-node {
+  position: absolute;
+  width: 236px;
+  min-height: 152px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+  text-align: left;
+  padding: var(--space-3);
+  border: 1px solid var(--border-color-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-card);
+  cursor: pointer;
+  font: inherit;
+  color: var(--text-primary);
+  overflow: hidden;
+}
+
+.mindmap-node-selected {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--color-primary-light);
+}
+
+.mindmap-node-degraded {
+  border-style: dashed;
+  border-color: var(--status-warning-text);
+}
+
+.mindmap-node-fixture {
+  background: var(--bg-surface-alt);
+}
+
+.mindmap-node-id {
+  font-weight: 600;
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.mindmap-node-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.mindmap-badge {
+  font-size: 10px;
+}
+
+.mindmap-badge-fixture {
+  background: var(--status-neutral-bg);
+  color: var(--status-neutral-text);
+}
+
+.mindmap-badge-degraded {
+  background: var(--status-warning-bg);
+  color: var(--status-warning-text);
+}
+
+.mindmap-badge-active {
+  background: var(--status-info-bg);
+  color: var(--status-info-text);
+}
+
+.mindmap-node-meta,
+.mindmap-node-tasks,
+.mindmap-node-lineage {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.mindmap-node-lineage {
+  color: var(--text-muted);
+}
+
+.mindmap-list {
+  margin: 0;
+  padding-left: var(--space-5);
+}
+
+.mindmap-list-item {
+  font-size: 12px;
+  margin-bottom: var(--space-2);
+  word-break: break-word;
+}
+
+.mindmap-list-detail {
+  color: var(--text-secondary);
+}
