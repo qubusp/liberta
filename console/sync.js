@@ -45,11 +45,22 @@ function warnOnce(runId, msg) {
   process.stderr.write(`[sync] ${msg}\n`);
 }
 
-async function upsertRun(session, liveStatus) {
+// Lineage: state.json is authoritative, the index.json entry is a
+// convenience copy, and a missing field on either always reads as null (a
+// root node) rather than an error -- most existing sessions predate the
+// field entirely.
+function resolveParentSessionId(session, state) {
+  if (state && state.parent_session_id) return state.parent_session_id;
+  if (session && session.parent_session_id) return session.parent_session_id;
+  return null;
+}
+
+async function upsertRun(session, liveStatus, state) {
   const row = {
     id: session.id,
     project_path: session.project_path || null,
     status: liveStatus || session.status || null,
+    parent_session_id: resolveParentSessionId(session, state),
     active: 0,
     updated_at: new Date(),
   };
@@ -59,6 +70,7 @@ async function upsertRun(session, liveStatus) {
     .merge({
       project_path: row.project_path,
       status: row.status,
+      parent_session_id: row.parent_session_id,
       updated_at: row.updated_at,
     });
 }
@@ -191,7 +203,7 @@ async function syncOneRun(session) {
   const state = readJsonSafe(path.join(dir, "state.json"));
   const liveStatus = state && state.status ? state.status : null;
 
-  await upsertRun(session, liveStatus);
+  await upsertRun(session, liveStatus, state);
 
   const plan = readJsonSafe(path.join(dir, "plan.json"));
   await syncTasks(runId, plan);

@@ -32,11 +32,17 @@ const RUNS_DIR = path.join(os.homedir(), ".claude", "liberta-runs");
 const INDEX_PATH = path.join(RUNS_DIR, "index.json");
 const FIXTURE_PREFIX = "zz-fixture-";
 
+// Lineage (`parent_session_id`) is deliberately shaped as a GRAPH, not a
+// single tree, so lineage/mindmap views have real edge data to render:
+// two roots (`running`, `idle`) plus two children hanging off the same
+// parent (`done` and `failed` are both children of `running`). null means
+// "root". Every parent here is itself a fixture id -- a fixture must
+// never point at a real session.
 const FIXTURES = [
-  { id: `${FIXTURE_PREFIX}running`, status: "running" },
-  { id: `${FIXTURE_PREFIX}done`, status: "done" },
-  { id: `${FIXTURE_PREFIX}failed`, status: "failed" },
-  { id: `${FIXTURE_PREFIX}idle`, status: "idle" },
+  { id: `${FIXTURE_PREFIX}running`, status: "running", parent: null },
+  { id: `${FIXTURE_PREFIX}done`, status: "done", parent: `${FIXTURE_PREFIX}running` },
+  { id: `${FIXTURE_PREFIX}failed`, status: "failed", parent: `${FIXTURE_PREFIX}running` },
+  { id: `${FIXTURE_PREFIX}idle`, status: "idle", parent: null },
 ];
 
 function isFixtureId(id) {
@@ -144,17 +150,25 @@ function sampleGoal(id, status) {
   return `# Goal\n\n> Fixture session "${id}" for dashboard-state screenshots (status: ${status}).\n\nThis is throwaway test data written by console/scripts/fixture-sessions.mjs. Safe to delete.\n`;
 }
 
-function sampleState(status) {
-  return { status };
+function sampleState(status, parent) {
+  // parent_session_id: state.json is the authoritative copy, the
+  // index.json entry below is the convenience copy; the two must agree.
+  return { status, parent_session_id: parent === undefined ? null : parent };
 }
 
 async function createOne(fixture) {
   const dir = fixtureDir(fixture.id);
+  // A fixture may only ever claim another fixture as its parent.
+  if (fixture.parent !== null && !isFixtureId(fixture.parent)) {
+    throw new Error(
+      `fixture "${fixture.id}" has non-fixture parent "${fixture.parent}"`
+    );
+  }
   await fs.mkdir(dir, { recursive: true });
   await fs.mkdir(path.join(dir, "inbox"), { recursive: true });
   await fs.writeFile(
     path.join(dir, "state.json"),
-    JSON.stringify(sampleState(fixture.status), null, 2) + "\n",
+    JSON.stringify(sampleState(fixture.status, fixture.parent), null, 2) + "\n",
     "utf8"
   );
   await fs.writeFile(path.join(dir, "goal.md"), sampleGoal(fixture.id, fixture.status), "utf8");
@@ -186,6 +200,7 @@ async function create() {
     id: f.id,
     project_path: "/tmp/zz-fixture-project",
     status: f.status,
+    parent_session_id: f.parent === undefined ? null : f.parent,
   }));
   idx.sessions = [...nonFixtureSessions, ...fixtureSessions];
   // Never change which session is active.

@@ -98,9 +98,22 @@ function main() {
     if (!Array.isArray(index.sessions)) index.sessions = [];
     let entry = index.sessions.find((s) => s && s.id === sessionId);
     if (!entry) {
-      entry = { id: sessionId, project_path: null, status: opts.status };
+      // parent_session_id is part of the index entry shape (see
+      // skills/liberta/SKILL.md). A fallback entry for an unknown session
+      // has no lineage information available, so it starts as null (a
+      // root); whatever creates the session properly is responsible for
+      // setting the real value.
+      entry = {
+        id: sessionId,
+        project_path: null,
+        status: opts.status,
+        parent_session_id: null,
+      };
       index.sessions.push(entry);
     } else {
+      // Only status is ours to update here. Never clobber an existing
+      // parent_session_id (or any other field) -- lineage is written at
+      // session creation / by the backfill tool, not by event logging.
       entry.status = opts.status;
     }
     try {
