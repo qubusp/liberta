@@ -44,11 +44,20 @@ scripts/wave-exec.js     runs one wave of a plan's tasks concurrently, in isolat
 console/                 a small authenticated web UI showing live session status
 ```
 
-## Installing the harness into Claude Code
+## Installing
 
 ```
-cp -r skills/liberta   ~/.claude/skills/liberta
-cp -r agents/*        ~/.claude/agents/
+./install.sh
+```
+
+Works on macOS and Linux. Installs the controller skill and agent roster
+into `~/.claude/` (backing up anything already there before overwriting),
+prepares the run-store directory, and sets up the console's dependencies.
+
+```
+./install.sh --no-console   # harness only, skip the console's npm install
+./install.sh --start        # also start the console immediately, with a
+                             # freshly generated one-off login password
 ```
 
 Then from any Claude Code session: `/liberta "<goal>" --project <path>`.
