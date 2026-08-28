@@ -9,9 +9,17 @@
   const eventsLog = document.getElementById("events-log");
   const detailTitle = document.getElementById("detail-title");
 
+  // Last-known status per session id, taken from /api/sessions. The detail
+  // payload does not always carry `status`, and this is only used to drive
+  // the decorative t6 pixel-art treatment on the detail header.
+  const sessionStatusById = new Map();
+
+  function statusSlug(status) {
+    return (status || "unknown").toString().toLowerCase().replace(/[^a-z0-9_]/g, "_");
+  }
+
   function statusClass(status) {
-    const s = (status || "unknown").toString().toLowerCase();
-    return "status-" + s.replace(/[^a-z0-9_]/g, "_");
+    return "status-" + statusSlug(status);
   }
 
   function statusPill(status) {
@@ -38,6 +46,11 @@
     for (const s of data.sessions) {
       const tr = document.createElement("tr");
       tr.dataset.id = s.id;
+      // Drives the pixel-art "working" row treatment in style.css (t6).
+      // A data attribute, not a class, so it cannot collide with the
+      // .status-* pill colour rules.
+      tr.dataset.status = statusSlug(s.status);
+      sessionStatusById.set(s.id, s.status);
 
       const idTd = document.createElement("td");
       idTd.textContent = s.id;
@@ -73,6 +86,11 @@
 
   function renderDetail(data) {
     detailTitle.textContent = data.id;
+    // Same purely-decorative hook for the detail header (t6). The title
+    // text is unchanged, so the heading's accessible name is unaffected.
+    detailTitle.dataset.status = statusSlug(
+      data.status != null ? data.status : sessionStatusById.get(data.id)
+    );
 
     tasksBody.innerHTML = "";
     const tasks = Array.isArray(data.tasks) ? data.tasks : [];
