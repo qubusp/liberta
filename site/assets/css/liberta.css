@@ -1,0 +1,794 @@
+/* =========================================================================
+   Liberta documentation site.
+
+   The palette, radii, shadows and spacing scale below are copied verbatim
+   from console/public/style.css's :root so the site and the console read as
+   one product: the deep aubergine chrome, the purple accents, the same
+   status pills, the same restrained card-and-rule surfaces.
+
+   Self-contained on purpose: no CDN, no webfont, no external asset of any
+   kind. Every URL in this file is a relative path or a data URI.
+   ========================================================================= */
+
+:root {
+  /* Palette -- console tokens, unchanged */
+  --color-primary: #6e49cb;
+  --color-primary-dark: #5a3aa8;
+  --color-primary-light: #f1ebfb;
+  --color-primary-text: #4c2f9e;
+
+  --sidebar-bg: #29173f;
+  --sidebar-bg-active: #3a2359;
+  --sidebar-text: #d8cdec;
+  --sidebar-text-muted: #9c8ab8;
+  --sidebar-text-active: #ffffff;
+  --sidebar-border: #3a2359;
+
+  --bg-page: #f4f3f8;
+  --bg-surface: #ffffff;
+  --bg-surface-alt: #faf9fc;
+  --bg-code: #f6f4fb;
+
+  --border-color: #e3e0ec;
+  --border-color-strong: #d3cee3;
+
+  --text-primary: #1f1a2e;
+  --text-secondary: #5c5670;
+  /* --text-muted is a console token and is kept here for fidelity, but it
+     is deliberately NOT used for body-sized text on this site: #8a839c on
+     #ffffff computes to 3.36:1, below the 4.5:1 AA minimum. Secondary text
+     uses --text-secondary instead. */
+  --text-muted: #8a839c;
+
+  --status-success-bg: #e4f7ea;
+  --status-success-text: #1b7a3d;
+  --status-info-bg: #e8effd;
+  --status-info-text: #2456c9;
+  --status-warning-bg: #fdf1de;
+  --status-warning-text: #a85e07;
+  --status-danger-bg: #fbe7e8;
+  --status-danger-text: #c62834;
+  --status-neutral-bg: #eeecf3;
+  --status-neutral-text: #635c78;
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+
+  --shadow-card: 0 1px 2px rgba(30, 20, 60, 0.06), 0 2px 10px rgba(30, 20, 60, 0.05);
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  --transition-fast: 120ms ease;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  /* Focus ring. On light surfaces this is a darkened primary; against the
+     aubergine chrome it flips to white -- see the .sidebar override. The
+     light-surface ring at 3.85:1 on #ffffff clears the 3:1 non-text
+     minimum, but the SAME ring on #29173f would be 2.70:1 and fail. */
+  --focus-ring: #5734a8;
+
+  --sidebar-width: 264px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  /* Fluid so a 20px root font (text-only zoom) cannot force a wider
+     minimum than the viewport. */
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  line-height: 1.6;
+  color: var(--text-primary);
+  background: var(--bg-page);
+  -webkit-font-smoothing: antialiased;
+  /* Nothing on this page may push the viewport sideways. */
+  overflow-x: hidden;
+}
+
+/* -------------------------------------------------------------------------
+   Focus: visible on everything interactive, 3:1 against its own surface.
+   ------------------------------------------------------------------------- */
+:where(a, button, summary, [tabindex]):focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+.skip-link {
+  position: absolute;
+  left: var(--space-3);
+  top: var(--space-3);
+  z-index: 20;
+  padding: var(--space-2) var(--space-4);
+  background: var(--bg-surface);
+  color: var(--color-primary-text);
+  border: 1px solid var(--border-color-strong);
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+  text-decoration: none;
+  transform: translateY(-200%);
+  transition: transform var(--transition-fast);
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
+
+/* When it appears, the skip link sits on top of the aubergine chrome (the
+   sidebar is at the top-left at every viewport). The light ring would be
+   2.70:1 there; white is 14.64:1. */
+.skip-link {
+  --focus-ring: #ffffff;
+}
+
+/* -------------------------------------------------------------------------
+   App shell: dark sidebar + light workspace, exactly like the console.
+   ------------------------------------------------------------------------- */
+.app-shell {
+  display: flex;
+  align-items: flex-start;
+  min-height: 100vh;
+}
+
+.sidebar {
+  flex: 0 0 var(--sidebar-width);
+  width: var(--sidebar-width);
+  max-width: 100%;
+  align-self: stretch;
+  background: var(--sidebar-bg);
+  color: var(--sidebar-text);
+  padding: var(--space-4) var(--space-3) var(--space-6);
+  position: sticky;
+  top: 0;
+  max-height: 100vh;
+  overflow-y: auto;
+}
+
+/* Against #29173f the light ring is 2.70:1 and fails the 3:1 minimum, so
+   everything drawn on the aubergine chrome uses a white ring (14.6:1). */
+.sidebar {
+  --focus-ring: #ffffff;
+}
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-2) var(--space-5);
+  color: var(--sidebar-text-active);
+  text-decoration: none;
+}
+
+.sidebar-brand-mark {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-md);
+  background: var(--color-primary);
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.sidebar-brand-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+  min-width: 0;
+}
+
+.sidebar-brand-name {
+  font-weight: 700;
+  font-size: 1.0625rem;
+  letter-spacing: 0.01em;
+}
+
+.sidebar-brand-sub {
+  font-size: 0.8125rem;
+  color: var(--sidebar-text-muted);
+}
+
+.sidebar-nav-heading {
+  margin: var(--space-4) var(--space-2) var(--space-2);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--sidebar-text-muted);
+}
+
+.sidebar-nav-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.sidebar-nav-link {
+  display: block;
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: 2px;
+  border-radius: var(--radius-sm);
+  color: var(--sidebar-text);
+  text-decoration: none;
+  font-size: 0.9375rem;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.sidebar-nav-link:hover {
+  background: var(--sidebar-bg-active);
+  color: var(--sidebar-text-active);
+  text-decoration: underline;
+}
+
+.sidebar-nav-link.is-current {
+  background: var(--sidebar-bg-active);
+  color: var(--sidebar-text-active);
+  font-weight: 600;
+  box-shadow: inset 3px 0 0 0 var(--color-primary);
+}
+
+/* -------------------------------------------------------------------------
+   Workspace
+   ------------------------------------------------------------------------- */
+.workspace {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.content {
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: 54rem;
+  padding: var(--space-6) var(--space-5);
+  margin: 0;
+}
+
+/* -------------------------------------------------------------------------
+   Hero (landing page)
+   ------------------------------------------------------------------------- */
+.hero {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-left: 4px solid var(--color-primary);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  padding: var(--space-6) var(--space-5);
+  margin-bottom: var(--space-6);
+}
+
+.hero-eyebrow,
+.doc-eyebrow {
+  margin: 0 0 var(--space-2);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-primary-text);
+}
+
+.hero h1 {
+  margin: 0 0 var(--space-3);
+}
+
+.hero-lede {
+  margin: 0 0 var(--space-5);
+  font-size: 1.125rem;
+  color: var(--text-secondary);
+  max-width: 42rem;
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.btn {
+  display: inline-block;
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  font-weight: 600;
+  font-size: 0.9375rem;
+  text-decoration: none;
+  border: 1px solid transparent;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.btn-primary {
+  background: var(--color-primary-dark);
+  color: #ffffff;
+  border-color: var(--color-primary-dark);
+}
+
+.btn-primary:hover {
+  background: var(--color-primary-text);
+  border-color: var(--color-primary-text);
+  text-decoration: underline;
+}
+
+.btn-secondary {
+  background: var(--bg-surface);
+  color: var(--color-primary-text);
+  border-color: var(--border-color-strong);
+}
+
+.btn-secondary:hover {
+  background: var(--color-primary-light);
+  text-decoration: underline;
+}
+
+/* -------------------------------------------------------------------------
+   Typography
+   ------------------------------------------------------------------------- */
+h1, h2, h3, h4 {
+  color: var(--text-primary);
+  line-height: 1.25;
+  /* Long identifiers in headings must never widen the page. */
+  overflow-wrap: break-word;
+}
+
+h1 {
+  font-size: 2rem;
+  letter-spacing: -0.01em;
+}
+
+h2 {
+  font-size: 1.375rem;
+  margin: var(--space-6) 0 var(--space-3);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--border-color);
+}
+
+h3 {
+  font-size: 1.0625rem;
+  margin: var(--space-5) 0 var(--space-2);
+}
+
+p, li {
+  overflow-wrap: break-word;
+}
+
+a {
+  color: var(--color-primary-text);
+}
+
+a:hover {
+  color: var(--color-primary-dark);
+}
+
+strong {
+  color: var(--text-primary);
+}
+
+code {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  background: var(--bg-code);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 0.1em 0.35em;
+  /* A long path in inline code wraps rather than pushing the page wide. */
+  overflow-wrap: break-word;
+}
+
+/* Wide content scrolls inside its own box, never the page.
+
+   Every fenced code block in the Markdown carries a kramdown IAL
+   (`{: tabindex="0"}`). Under Jekyll's rouge highlighter those attributes
+   land on the WRAPPER div, not on the <pre> -- so the wrapper is what must
+   own the horizontal scroll, otherwise the scroll region would be
+   unreachable from the keyboard (axe: scrollable-region-focusable). */
+.highlighter-rouge {
+  background: var(--bg-code);
+  border: 1px solid var(--border-color);
+  border-left: 3px solid var(--border-color-strong);
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+  max-width: 100%;
+  margin: var(--space-4) 0;
+}
+
+.highlighter-rouge .highlight {
+  margin: 0;
+}
+
+pre {
+  background: var(--bg-code);
+  border: 1px solid var(--border-color);
+  border-left: 3px solid var(--border-color-strong);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  overflow-x: auto;
+  max-width: 100%;
+  font-size: 0.8125rem;
+  line-height: 1.55;
+}
+
+/* Inside the wrapper the <pre> is only the ink: the box and the scrolling
+   belong to the focusable wrapper above. */
+.highlighter-rouge pre {
+  background: none;
+  border: 0;
+  border-radius: 0;
+  margin: 0;
+  overflow-x: visible;
+  max-width: none;
+}
+
+pre code {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: inherit;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+blockquote {
+  margin: var(--space-4) 0;
+  padding: var(--space-3) var(--space-4);
+  border-left: 4px solid var(--color-primary);
+  background: var(--color-primary-light);
+  color: var(--text-primary);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+}
+
+blockquote > :first-child { margin-top: 0; }
+blockquote > :last-child { margin-bottom: 0; }
+
+hr {
+  border: 0;
+  border-top: 1px solid var(--border-color);
+  margin: var(--space-6) 0;
+}
+
+/* Tables keep their table semantics (display:block would strip the table
+   role out of the accessibility tree); the SCROLLER is a wrapper element
+   that carries tabindex + role=region + a label, so a keyboard user can
+   reach and pan it. */
+.table-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+  margin: var(--space-4) 0;
+}
+
+.doc-body table,
+.home-body table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9375rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+}
+
+.doc-body th,
+.doc-body td,
+.home-body th,
+.home-body td {
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-color);
+  vertical-align: top;
+}
+
+.doc-body thead th,
+.home-body thead th {
+  background: var(--bg-surface-alt);
+  color: var(--text-primary);
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* -------------------------------------------------------------------------
+   Doc page furniture
+   ------------------------------------------------------------------------- */
+.doc-header {
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: var(--space-5);
+}
+
+.doc-header h1 {
+  margin: 0;
+}
+
+.doc-summary {
+  margin: var(--space-3) 0 0;
+  font-size: 1.0625rem;
+  color: var(--text-secondary);
+  max-width: 42rem;
+}
+
+.doc-sources {
+  margin-top: var(--space-6);
+  padding: var(--space-4);
+  background: var(--bg-surface-alt);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+}
+
+.doc-sources h2 {
+  margin: 0 0 var(--space-2);
+  padding: 0;
+  border: 0;
+  font-size: 0.8125rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.doc-sources p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.9375rem;
+}
+
+.doc-pager {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-top: var(--space-6);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border-color);
+}
+
+.doc-pager-link {
+  flex: 1 1 min(100%, 15rem);
+  min-width: 0;
+  display: block;
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  text-decoration: none;
+  box-shadow: var(--shadow-card);
+}
+
+.doc-pager-next {
+  text-align: right;
+}
+
+.doc-pager-link:hover {
+  border-color: var(--color-primary);
+  background: var(--color-primary-light);
+}
+
+.doc-pager-dir {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.doc-pager-title {
+  display: block;
+  font-weight: 600;
+  color: var(--color-primary-text);
+  text-decoration: underline;
+}
+
+/* -------------------------------------------------------------------------
+   Cards. NOTE the min() guard on every auto-fit grid: a bare
+   minmax(18rem, 1fr) makes the track floor 18rem, which at a 20px root
+   font is 360px and overflows a 390px viewport once padding is counted.
+   ------------------------------------------------------------------------- */
+.card-grid,
+.feature-list {
+  list-style: none;
+  margin: var(--space-4) 0 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-4);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr));
+}
+
+.card,
+.feature-list > li {
+  min-width: 0;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-left: 4px solid var(--color-primary);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  padding: var(--space-4);
+}
+
+.card h3,
+.feature-list > li h3 {
+  margin: 0 0 var(--space-2);
+  font-size: 1rem;
+}
+
+.card p,
+.feature-list > li p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.9375rem;
+}
+
+/* -------------------------------------------------------------------------
+   Status pills -- the console's own, token for token.
+   ------------------------------------------------------------------------- */
+.pill-legend {
+  list-style: none;
+  margin: var(--space-4) 0;
+  padding: 0;
+}
+
+.pill-legend > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.pill-note {
+  color: var(--text-secondary);
+  font-size: 0.9375rem;
+}
+
+/* The pill colour pairs are the console's tokens, unchanged. One of them --
+   warning, #a85e07 on #fdf1de -- computes to 4.41:1, which clears WCAG AA
+   for LARGE text (3:1) but not for small text (4.5:1). Rather than
+   approximate the palette, the specimens below are rendered at large-text
+   size (19px / 700), which is what AA actually asks for at that ratio. The
+   other four pairs clear 4.5:1 at any size. */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+  padding: 0.15rem 0.6rem;
+  border-radius: var(--radius-pill);
+  font-size: 1.1875rem;
+  font-weight: 700;
+  line-height: 1.4;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+.status-pill::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: 0 0 auto;
+}
+
+.status-running { background: var(--status-info-bg); color: var(--status-info-text); }
+.status-done { background: var(--status-success-bg); color: var(--status-success-text); }
+.status-failed { background: var(--status-danger-bg); color: var(--status-danger-text); }
+.status-pending { background: var(--status-warning-bg); color: var(--status-warning-text); }
+.status-unknown { background: var(--status-neutral-bg); color: var(--status-neutral-text); }
+
+/* -------------------------------------------------------------------------
+   Footer
+   ------------------------------------------------------------------------- */
+.site-footer {
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-surface-alt);
+  padding: var(--space-5);
+  color: var(--text-secondary);
+  font-size: 0.9375rem;
+}
+
+.site-footer p {
+  margin: 0 0 var(--space-2);
+  max-width: 54rem;
+}
+
+.site-footer p:last-child {
+  margin-bottom: 0;
+}
+
+/* -------------------------------------------------------------------------
+   Narrow layout. The chrome stacks above the content; no JS anywhere, so
+   the nav is always present rather than hidden behind a toggle.
+   ------------------------------------------------------------------------- */
+@media (max-width: 60rem) {
+  .app-shell {
+    display: block;
+  }
+
+  .sidebar {
+    width: 100%;
+    max-width: none;
+    flex: none;
+    position: static;
+    max-height: none;
+    overflow: visible;
+    padding: var(--space-4);
+    border-bottom: 1px solid var(--sidebar-border);
+  }
+
+  /* The nav goes horizontal and compact so it does not eat the whole
+     first screen on a phone. No disclosure toggle: there is no JS on this
+     site, and every link stays reachable. */
+  .sidebar-brand {
+    padding-bottom: var(--space-3);
+  }
+
+  .sidebar-nav-heading {
+    margin: var(--space-3) 0 var(--space-1);
+  }
+
+  .sidebar-nav-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1) var(--space-2);
+  }
+
+  .sidebar-nav-link {
+    margin-bottom: 0;
+    padding: var(--space-1) var(--space-2);
+    font-size: 0.875rem;
+  }
+
+  .sidebar-nav-link.is-current {
+    box-shadow: inset 0 -2px 0 0 var(--color-primary);
+  }
+
+  .workspace {
+    min-height: 0;
+  }
+
+  .content {
+    padding: var(--space-5) var(--space-4);
+  }
+
+  .hero {
+    padding: var(--space-5) var(--space-4);
+  }
+}
+
+@media (max-width: 30rem) {
+  h1 { font-size: 1.625rem; }
+  h2 { font-size: 1.1875rem; }
+  .hero-lede { font-size: 1rem; }
+  .content { padding: var(--space-4) var(--space-3); }
+  .doc-pager-next { text-align: left; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
