@@ -26,11 +26,7 @@
 
 import fs from "fs";
 import path from "path";
-import os from "os";
-
-function runsRoot() {
-  return path.join(os.homedir(), ".claude", "liberta-runs");
-}
+import { runsRoot } from "./_store.mjs";
 
 // --- safe, read-only file helpers -----------------------------------
 

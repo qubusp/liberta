@@ -42,18 +42,11 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { execFileSync } = require("child_process");
+const { runsRoot, sessionDir } = require("./_store.cjs");
 
 function fail(msg) {
   process.stderr.write(`wave-exec: ${msg}\n`);
   process.exit(1);
-}
-
-function runsRoot() {
-  return path.join(os.homedir(), ".claude", "liberta-runs");
-}
-
-function sessionDir(sessionId) {
-  return path.join(runsRoot(), sessionId);
 }
 
 function waveDir(sessionId, wave) {

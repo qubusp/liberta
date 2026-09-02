@@ -10,16 +10,12 @@
 
 import fs from "fs";
 import path from "path";
-import os from "os";
 import crypto from "crypto";
+import { runsRoot } from "./_store.mjs";
 
 function fail(msg) {
   process.stderr.write(`_mailbox: ${msg}\n`);
   process.exit(1);
-}
-
-function runsRoot() {
-  return path.join(os.homedir(), ".claude", "liberta-runs");
 }
 
 function inboxDir(sessionId) {
