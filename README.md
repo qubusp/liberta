@@ -123,6 +123,44 @@ per-wave: w1:2/2 w2:4/4 w3:8/9 w4:0/6 w5:0/2 w6:0/3 w7:0/1 w8:0/1 w9:0/1
 inbox: 0 pending
 ```
 
+## Concurrency
+
+Liberta sessions are not exclusive: several sessions can be running at the
+same time on the same machine, and even against the same target repository.
+Most of what each one keeps on disk is already safe under that; a few shared
+pieces need explicit handling.
+
+- **The run registry (`index.json`) takes a lock.** Every read-modify-write
+  of `~/.claude/liberta-runs/index.json` goes through an advisory lock file
+  named `index.json.lock`, next to it: a writer takes the lock, re-reads the
+  index fresh inside it, applies its change, and writes back, so two sessions
+  updating status at the same moment cannot silently drop each other's entry.
+  A lock is only ever taken over as stale once it is older than 30 seconds
+  AND the pid that holds it is no longer alive; a live holder is never
+  pre-empted. Each session's own `state.json` is guarded the same way.
+- **`active_session_id` is one slot, not a roster.** It names the run the CLI
+  defaults to when you do not pass a session id; it is not a claim that only
+  one session exists. With several sessions live, it points at whichever one
+  most recently touched it, and the others are still running and still
+  visible individually or with `--all`. Do not treat it as "the" active
+  session when more than one may be running.
+- **Per-session files are session scoped and safe.** Each session's own
+  `state.json`, `events.jsonl` and inbox files live under that session's own
+  directory in the run store, so two different sessions never write the same
+  file. `events.jsonl` is append-only and safe under concurrent writers by
+  construction.
+- **Branches and worktrees are session scoped, and no session touches
+  another's.** Branch and worktree names always include the session id, so
+  two sessions can never collide on a name, and worktree removal is fenced to
+  a session's own worktree directory. `git worktree prune` is never run
+  anywhere in this codebase, on purpose: it is a repo-wide operation that
+  would silently deregister another live session's worktree, so any cleanup
+  targets only the session's own paths instead.
+
+The full audit this is based on - every shared file, the exact interleaving
+that can lose an update, and the design decision taken for it - lives at
+`site/docs/concurrency.md`.
+
 ## The name
 
 Liberta is named after a friend of mine who has been fighting ADHD all her
