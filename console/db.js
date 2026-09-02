@@ -13,7 +13,41 @@ const fs = require("fs");
 const path = require("path");
 const Knex = require("knex");
 
+const { runsRoot } = require("../scripts/_store.cjs");
+
 const DB_CLIENT = (process.env.DB_CLIENT || "sqlite3").trim();
+
+// ---------------------------------------------------------------------
+// Where the sqlite mirror file lives. This MUST be scoped to the active
+// run store: console/sync.js's reapRuns() deletes any `runs`/`tasks`/
+// `events` rows whose subject is absent from the run store currently
+// being synced, so if this database were a single fixed path shared by
+// every invocation, booting the console against a throwaway store (as
+// every concurrency test does via LIBERTA_RUNS_DIR) would compare the
+// operator's real mirror rows against the throwaway store's near-empty
+// index.json and reap the operator's live sessions out of it.
+//
+// Resolution order:
+//   1. LIBERTA_CONSOLE_DB, if set to a non-empty path, always wins (an
+//      explicit override some callers, e.g. T14, rely on existing).
+//   2. If LIBERTA_RUNS_DIR is set (a throwaway/test store), the database
+//      lives inside that same store root, so it is exactly as throwaway
+//      as the store it mirrors and can never see the operator's rows.
+//   3. Otherwise (the common case: no override at all), fall back to the
+//      original fixed path so existing installs see a byte-identical
+//      default location.
+// ---------------------------------------------------------------------
+function resolveDbFile() {
+  const dbOverride = process.env.LIBERTA_CONSOLE_DB;
+  if (typeof dbOverride === "string" && dbOverride.length > 0) {
+    return path.resolve(dbOverride);
+  }
+  const runsDirOverride = process.env.LIBERTA_RUNS_DIR;
+  if (typeof runsDirOverride === "string" && runsDirOverride.length > 0) {
+    return path.join(runsRoot(), "console-data", "liberta.sqlite");
+  }
+  return path.join(__dirname, "data", "liberta.sqlite");
+}
 
 let knex;
 
@@ -32,11 +66,11 @@ if (DB_CLIENT === "pg" || DB_CLIENT === "postgres" || DB_CLIENT === "postgresql"
     connection: DATABASE_URL,
   });
 } else if (DB_CLIENT === "sqlite3" || DB_CLIENT === "sqlite") {
-  const dataDir = path.join(__dirname, "data");
+  const dbFile = resolveDbFile();
+  const dataDir = path.dirname(dbFile);
   if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true });
   }
-  const dbFile = path.join(dataDir, "liberta.sqlite");
   knex = Knex({
     client: "sqlite3",
     connection: { filename: dbFile },

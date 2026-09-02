@@ -25,7 +25,12 @@ const os = require("os");
 
 const { knex } = require("./db");
 
-const LIBERTA_RUNS_DIR = path.join(os.homedir(), ".claude", "liberta-runs");
+// Resolve where the Liberta run store lives on disk. Delegates to the
+// canonical resolver in scripts/_store.cjs (added in T8) so this module
+// and console/server.js share exactly one implementation of the
+// LIBERTA_RUNS_DIR override + homedir fallback, instead of duplicating it.
+const { runsRoot } = require("../scripts/_store.cjs");
+const LIBERTA_RUNS_DIR = runsRoot();
 
 // run_id -> last byte offset already ingested from that run's
 // events.jsonl. In-memory only -- a process restart just re-scans from

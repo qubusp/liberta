@@ -62,7 +62,13 @@ if (!SESSION_SECRET || SESSION_SECRET.length === 0) {
   );
 }
 
-const LIBERTA_RUNS_DIR = path.join(os.homedir(), ".claude", "liberta-runs");
+// Resolve where the Liberta run store lives on disk. Delegates to the
+// canonical resolver in scripts/_store.cjs (added in T8) rather than
+// duplicating its logic here, so console/server.js, console/sync.js and
+// every other caller across the harness share exactly one implementation
+// of the LIBERTA_RUNS_DIR override + homedir fallback.
+const { runsRoot } = require("../scripts/_store.cjs");
+const LIBERTA_RUNS_DIR = runsRoot();
 const SESSION_ID_PATTERN = /^[a-zA-Z0-9_.-]+$/;
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 4177;
