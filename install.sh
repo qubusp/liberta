@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Liberta installer — macOS and Linux.
+# Liberta installer, macOS and Linux.
 #
 # Installs the harness (controller skill + agent roster) into ~/.claude, and
 # optionally sets up the console (npm install, run-store dir, a generated
@@ -58,11 +58,13 @@ Usage: ./install.sh [--no-console] [--start]
 
   --no-console   Only install the harness (skill + agents) into ~/.claude;
                  skip setting up the console app.
-  --start        After installing, also start the console (npm start) with
-                 a freshly generated password, printed at the end.
+  --start        After installing, also start the console (node server.js),
+                 waiting for it to answer before reporting success.
 
 Env overrides:
-  CLAUDE_DIR     Where to install the skill/agents (default: ~/.claude)
+  CLAUDE_DIR              Where to install the skill/agents (default: ~/.claude)
+  PORT                    Console port (default: 4177)
+  LIBERTA_CONSOLE_PASSWORD  Console login password (default: insecure built-in default)
 EOF
       exit 0
       ;;
@@ -101,7 +103,7 @@ echo "  helper scripts remain in place at $SCRIPT_DIR/scripts (referenced by the
 if [ "$INSTALL_CONSOLE" -eq 1 ]; then
   echo "==> Setting up console"
   if ! command -v node >/dev/null 2>&1; then
-    echo "  node not found on PATH — skipping console setup."
+    echo "  node not found on PATH, skipping console setup."
     echo "  Install Node.js (18+) and re-run with no flags, or run this script with --no-console"
     echo "  next time to silence this message."
   else
@@ -124,19 +126,49 @@ echo "Use the harness from any Claude Code session:"
 echo "  /liberta \"<goal>\" --project <path-to-a-project>"
 echo
 
+CONSOLE_PORT="${PORT:-4177}"
+CONSOLE_URL="http://localhost:${CONSOLE_PORT}"
+
 if [ "$INSTALL_CONSOLE" -eq 1 ] && command -v node >/dev/null 2>&1; then
   if [ "$START_CONSOLE" -eq 1 ]; then
-    PW="$(node -e 'console.log(require("crypto").randomBytes(12).toString("base64").replace(/[^a-zA-Z0-9]/g,"").slice(0,16))')"
-    echo "==> Starting console on http://localhost:4177"
-    ( cd "$SCRIPT_DIR/console" && LIBERTA_CONSOLE_PASSWORD="$PW" nohup node server.js > /tmp/liberta-console.log 2>&1 & disown )
-    sleep 1
-    echo "  console running: http://localhost:4177"
-    echo "  password:        $PW"
-    echo "  (this password is only for this session — set LIBERTA_CONSOLE_PASSWORD yourself for anything durable)"
+    LOG_FILE="/tmp/liberta-console.log"
+    echo "==> Starting console on $CONSOLE_URL"
+    ( cd "$SCRIPT_DIR/console" && PORT="$CONSOLE_PORT" nohup node server.js > "$LOG_FILE" 2>&1 & disown )
+
+    up=0
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      if curl -s -o /dev/null -w '%{http_code}' "$CONSOLE_URL/login" 2>/dev/null | grep -q '^200$'; then
+        up=1
+        break
+      fi
+      sleep 0.5
+    done
+
+    if [ "$up" -eq 1 ]; then
+      echo "  console running: $CONSOLE_URL"
+      if [ -n "${LIBERTA_CONSOLE_PASSWORD:-}" ]; then
+        echo "  password:        (from LIBERTA_CONSOLE_PASSWORD, not shown here)"
+      else
+        echo "  password:        libert@123! (default, set LIBERTA_CONSOLE_PASSWORD yourself for anything durable)"
+        echo "  WARNING: using the insecure default password. Set LIBERTA_CONSOLE_PASSWORD before starting for anything durable."
+      fi
+    else
+      echo "error: console did not start (no response from $CONSOLE_URL after several seconds)." >&2
+      echo "  Likely cause: the port is already in use, or the console process failed to start/crashed." >&2
+      echo "  --- tail of $LOG_FILE ---" >&2
+      tail -n 20 "$LOG_FILE" >&2 2>/dev/null || echo "  (log file not found)" >&2
+      exit 1
+    fi
   else
     echo "To run the console:"
     echo "  cd $SCRIPT_DIR/console"
     echo "  LIBERTA_CONSOLE_PASSWORD='pick something' npm start"
-    echo "  # -> http://localhost:4177"
+    echo "  # -> $CONSOLE_URL"
+    if [ -n "${LIBERTA_CONSOLE_PASSWORD:-}" ]; then
+      echo "  (LIBERTA_CONSOLE_PASSWORD is currently set in this shell, so that value will be used)"
+    else
+      echo "  (LIBERTA_CONSOLE_PASSWORD is not set: the console will fall back to the insecure default password libert@123!)"
+      echo "  WARNING: set LIBERTA_CONSOLE_PASSWORD before starting for anything durable."
+    fi
   fi
 fi
