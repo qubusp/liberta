@@ -23,6 +23,17 @@ Override the port with `PORT`:
 PORT=8080 LIBERTA_CONSOLE_PASSWORD='...' npm start
 ```
 
+A second console started on a `PORT` that's already taken refuses to start
+with a one-line `FATAL:` message naming the port -- it never crashes with a
+raw `EADDRINUSE` stack trace. If you'd rather it just find a free port on its
+own (useful for running several consoles side by side, e.g. one per test
+run), set `LIBERTA_CONSOLE_PORT_AUTO=1`: it scans upward from `PORT` (up to
+20 ports) and logs which one it actually bound.
+
+```
+PORT=8080 LIBERTA_CONSOLE_PORT_AUTO=1 LIBERTA_CONSOLE_PASSWORD='...' npm start
+```
+
 Optionally set `LIBERTA_CONSOLE_SECRET` to a stable random string (used to
 sign session cookies). If it's left unset, the server generates a random
 secret at boot and warns about it -- every restart will then invalidate
@@ -150,10 +161,22 @@ back to reading the files directly for that one request.
 
 Two supported backends, picked via `DB_CLIENT`:
 
-- **`sqlite3`** (default) -- a local file at `console/data/liberta.sqlite`
-  (the `data/` directory is created automatically on first boot if
-  missing, and is gitignored -- the DB file itself is never committed).
-  Nothing else to configure.
+- **`sqlite3`** (default) -- a local file, created automatically on first
+  boot (its directory is gitignored -- the DB file itself is never
+  committed). Because this DB is a mirror scoped to one run store, two
+  console instances must never share a file unless an operator explicitly
+  says so: the filename is resolved *after* the port is bound (so
+  `LIBERTA_CONSOLE_PORT_AUTO` picking a different port also gets its own
+  file), in this order:
+  1. `LIBERTA_CONSOLE_DB=/some/path.sqlite`, if set, always wins -- an
+     explicit override, and the one way two instances CAN deliberately
+     share a database.
+  2. If `LIBERTA_RUNS_DIR` is set (pointing this console at a non-default
+     run store, e.g. in tests), the file lives inside that store, named
+     `liberta-<port>.sqlite`.
+  3. Otherwise: `console/data/liberta.sqlite` if bound to the canonical
+     default port 4177 (byte-identical to existing installs), or
+     `console/data/liberta-<port>.sqlite` for any other port.
 - **`pg`** -- a real Postgres instance, for production/shared use.
   Requires `DATABASE_URL` (a standard `postgres://user:pass@host:port/db`
   connection string) to also be set. If `DB_CLIENT=pg` is given without
