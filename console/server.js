@@ -1548,8 +1548,10 @@ function listenWithRetry(port, triesLeft, onListening) {
     const boundPort = server.address().port;
     if (PORT_AUTO && boundPort !== PORT) {
       process.stdout.write(
-        "NOTE: the requested PORT was already in use; " +
-          `LIBERTA_CONSOLE_PORT_AUTO picked free port ${boundPort} instead.\n`
+        "NOTE: the requested PORT was already taken; LIBERTA_CONSOLE_PORT_AUTO " +
+          `bound the next free port instead: ${boundPort}. The sqlite mirror ` +
+          "is scoped to this bound port, so this instance's database is its " +
+          "own file, not shared with whatever is holding the requested port.\n"
       );
     }
     // NOTE: the wording/format of the line below is a contract --
