@@ -7,7 +7,7 @@ double-checking each one independently before it counts as done, and
 stopping (with a notification) on a clear terminal condition instead of
 silently running forever or claiming victory early.
 
-MIT licensed — use it, fork it, sell it, whatever. See [LICENSE](LICENSE).
+MIT licensed - use it, fork it, sell it, whatever. See [LICENSE](LICENSE).
 
 ## Why
 
@@ -19,11 +19,11 @@ that anything passed. Liberta's structure exists specifically to close off
 each of those:
 
 - **One task, one fresh subagent.** The controller (`skills/liberta`) never
-  implements anything itself — it reads a task off a plan, hands it to the
+  implements anything itself - it reads a task off a plan, hands it to the
   right specialist, and reads back a verdict. Context never accumulates
   past a thin bookkeeping layer.
 - **Independent verification.** A task is not "done" until a second,
-  separate agent — one that did not write the change — reproduces the
+  separate agent - one that did not write the change - reproduces the
   evidence that it works.
 - **Durable state on disk.** Plan, progress, budget, and an append-only
   event log live in a session store outside the target repo, so a run
@@ -37,7 +37,7 @@ each of those:
 ## Layout
 
 ```
-skills/liberta/SKILL.md   the controller — a Claude Code skill, invoked as /liberta "<goal>"
+skills/liberta/SKILL.md   the controller - a Claude Code skill, invoked as /liberta "<goal>"
 agents/*.md              the specialist roster (planner, builder, auditor, qa, ...)
 scripts/*.mjs            session-store helpers: event log, message inbox
 scripts/wave-exec.js     runs one wave of a plan's tasks concurrently, in isolated worktrees
@@ -56,9 +56,13 @@ prepares the run-store directory, and sets up the console's dependencies.
 
 ```
 ./install.sh --no-console   # harness only, skip the console's npm install
-./install.sh --start        # also start the console immediately, with a
-                             # freshly generated one-off login password
+./install.sh --start        # also start the console immediately, logged in
+                             # with the default password libert@123!
 ```
+
+The default password is insecure and meant only for local, single-operator
+use. For anything durable or reachable over the network, set
+`LIBERTA_CONSOLE_PASSWORD` (see below) before starting the console.
 
 Then from any Claude Code session: `/liberta "<goal>" --project <path>`.
 
@@ -66,7 +70,7 @@ Then from any Claude Code session: `/liberta "<goal>" --project <path>`.
 
 `console/` is a small Node/Express app that reads the session store
 (`~/.claude/liberta-runs/`) and shows, live, which sessions exist, which one
-is active, its current task board, and a tail of its event stream — the
+is active, its current task board, and a tail of its event stream - the
 "which session is working" view. It sits behind a login (see
 `console/README.md`) since the session store can contain repo paths, task
 descriptions, and other detail you may not want exposed to anyone who finds
@@ -75,14 +79,23 @@ the URL.
 ```
 cd console
 npm install
+npm start
+# → http://localhost:4177, logged in with the default password libert@123!
+```
+
+The default password is insecure, intended only for local, single-operator
+use. Set `LIBERTA_CONSOLE_PASSWORD` to override it with your own value
+whenever the console will run for any length of time or be reachable from
+the network; when set and non-empty, it always wins over the default:
+
+```
 LIBERTA_CONSOLE_PASSWORD='pick something' npm start
-# → http://localhost:4177
 ```
 
 ## Checking status
 
 `/liberta status` (also `--status`, or `/liberta` with no goal text) prints
-a progress table for the active run and stops — nothing else. It runs
+a progress table for the active run and stops - nothing else. It runs
 `scripts/_status.mjs` directly: no subagent is dispatched, no plan is
 regenerated, no model is called, and nothing on disk is touched. It just
 reads `~/.claude/liberta-runs/` and prints, so it feels instant even mid-run.
