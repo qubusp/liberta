@@ -40,10 +40,11 @@ const DEFAULT_PORT = 4177;
 //      two instances CAN share a database this way, deliberately, since
 //      the operator asked for it by name.
 //   2. If LIBERTA_RUNS_DIR is set (a throwaway/test store), the database
-//      lives inside that same store root, named after the bound port, so
-//      it is exactly as throwaway as the store it mirrors, can never see
-//      the operator's rows, AND never collides with a sibling instance
-//      that happens to share the same LIBERTA_RUNS_DIR on a different port.
+//      lives inside a console-data/ subdirectory of that same store root,
+//      named after the bound port, so it is exactly as throwaway as the
+//      store it mirrors, can never see the operator's rows, AND never
+//      collides with a sibling instance that happens to share the same
+//      LIBERTA_RUNS_DIR on a different port.
 //   3. Otherwise (no LIBERTA_RUNS_DIR): the canonical default port keeps
 //      the original fixed path byte-identical for existing installs; any
 //      other port (e.g. a manually chosen PORT, or PORT_AUTO landing
