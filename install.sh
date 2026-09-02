@@ -131,18 +131,45 @@ CONSOLE_URL="http://localhost:${CONSOLE_PORT}"
 
 if [ "$INSTALL_CONSOLE" -eq 1 ] && command -v node >/dev/null 2>&1; then
   if [ "$START_CONSOLE" -eq 1 ]; then
-    LOG_FILE="/tmp/liberta-console.log"
+    LOG_FILE="/tmp/liberta-console-${CONSOLE_PORT}-$$.log"
     echo "==> Starting console on $CONSOLE_URL"
-    ( cd "$SCRIPT_DIR/console" && PORT="$CONSOLE_PORT" nohup node server.js > "$LOG_FILE" 2>&1 & disown )
+    # Use `exec` inside the backgrounded subshell so the shell process that
+    # bash's $! refers to is replaced in-place by (eventually) node itself,
+    # rather than node being forked as a *grandchild* of an intermediate
+    # wrapper shell. Without `exec` here, $! captures the wrapper's pid, not
+    # node's pid, and the liveness checks below would be comparing against
+    # the wrong process.
+    ( cd "$SCRIPT_DIR/console" && exec env PORT="$CONSOLE_PORT" nohup node server.js ) > "$LOG_FILE" 2>&1 &
+    SPAWNED_PID=$!
+    disown
 
     up=0
     for _ in 1 2 3 4 5 6 7 8 9 10; do
+      if [ -n "$SPAWNED_PID" ] && ! kill -0 "$SPAWNED_PID" 2>/dev/null; then
+        # The process we spawned has already exited (e.g. crashed with
+        # EADDRINUSE). No amount of curl success from some other process
+        # already bound to the port counts as our console starting.
+        break
+      fi
       if curl -s -o /dev/null -w '%{http_code}' "$CONSOLE_URL/login" 2>/dev/null | grep -q '^200$'; then
         up=1
         break
       fi
       sleep 0.5
     done
+
+    # Even if curl succeeded, confirm it was actually our spawned process
+    # that ended up bound to the port (not a pre-existing/other process).
+    if [ "$up" -eq 1 ] && [ -n "$SPAWNED_PID" ]; then
+      if ! kill -0 "$SPAWNED_PID" 2>/dev/null; then
+        up=0
+      elif command -v lsof >/dev/null 2>&1; then
+        LISTEN_PID="$(lsof -nP -tiTCP:"$CONSOLE_PORT" -sTCP:LISTEN 2>/dev/null | head -n1 || true)"
+        if [ -n "$LISTEN_PID" ] && [ "$LISTEN_PID" != "$SPAWNED_PID" ]; then
+          up=0
+        fi
+      fi
+    fi
 
     if [ "$up" -eq 1 ]; then
       echo "  console running: $CONSOLE_URL"
@@ -153,8 +180,8 @@ if [ "$INSTALL_CONSOLE" -eq 1 ] && command -v node >/dev/null 2>&1; then
         echo "  WARNING: using the insecure default password. Set LIBERTA_CONSOLE_PASSWORD before starting for anything durable."
       fi
     else
-      echo "error: console did not start (no response from $CONSOLE_URL after several seconds)." >&2
-      echo "  Likely cause: the port is already in use, or the console process failed to start/crashed." >&2
+      echo "error: console did not start (no response from $CONSOLE_URL after several seconds, or the port is already owned by a different, pre-existing process)." >&2
+      echo "  Likely cause: the port is already in use by another process, or the console process failed to start/crashed." >&2
       echo "  --- tail of $LOG_FILE ---" >&2
       tail -n 20 "$LOG_FILE" >&2 2>/dev/null || echo "  (log file not found)" >&2
       exit 1
