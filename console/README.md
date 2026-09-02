@@ -28,9 +28,26 @@ sign session cookies). If it's left unset, the server generates a random
 secret at boot and warns about it -- every restart will then invalidate
 all existing login sessions, since the signing key changed.
 
-`LIBERTA_CONSOLE_PASSWORD` is required. The server refuses to start at all
-(fails loudly on boot, non-zero exit) if it's unset or empty -- there is
-no default password and no way to run this without one.
+`LIBERTA_CONSOLE_PASSWORD` is an optional override, not a requirement. If
+it's unset or empty, the server falls back to a built-in default password,
+`libert@123!`, instead of refusing to start:
+
+```
+cd console
+npm install
+npm start
+# → http://localhost:4177
+```
+
+**That default is insecure.** It's public (it's printed right here in this
+README), it's identical on every install, and the console binds `0.0.0.0`
+by default -- so anyone else on the same network can reach the login page
+and try it. The default exists only so a quick, local, single-operator
+install works out of the box with zero configuration. The server prints a
+warning to stderr at boot whenever the default is in effect. Set
+`LIBERTA_CONSOLE_PASSWORD` to a real secret for anything durable (you want
+sessions to survive a restart with a stable secret) or reachable over a
+network by anyone besides you.
 
 ## Auth model
 
@@ -94,8 +111,8 @@ GitHub" button below the password form.
 `LIBERTA_ALLOWED_GITHUB_USERS` is a comma-separated allowlist of GitHub
 usernames (case-insensitive). **It's required** the moment
 `LIBERTA_OAUTH_GITHUB_CLIENT_ID`/`_SECRET` are set -- if it's missing or
-empty, the server fails loudly at boot and refuses to start, the same
-fail-closed pattern as the missing-password check. This exists because
+empty, the server fails loudly at boot and refuses to start. This is a
+fail-closed check: this exists because
 GitHub OAuth alone only proves "this is a real GitHub account," not "this
 account should have access to this console" -- without an allowlist,
 *any* GitHub user could complete the OAuth flow and get in.
@@ -140,9 +157,9 @@ Two supported backends, picked via `DB_CLIENT`:
 - **`pg`** -- a real Postgres instance, for production/shared use.
   Requires `DATABASE_URL` (a standard `postgres://user:pass@host:port/db`
   connection string) to also be set. If `DB_CLIENT=pg` is given without
-  `DATABASE_URL`, the server fails loudly on boot and exits (same
-  fail-closed pattern as the missing-password check above) rather than
-  silently falling back to sqlite or starting half-configured.
+  `DATABASE_URL`, the server fails loudly on boot and exits (a
+  fail-closed check) rather than silently falling back to sqlite or
+  starting half-configured.
 
 ```
 DB_CLIENT=pg DATABASE_URL='postgres://user:pass@host:5432/liberta' LIBERTA_CONSOLE_PASSWORD='...' npm start
