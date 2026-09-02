@@ -132,16 +132,62 @@ CONSOLE_URL="http://localhost:${CONSOLE_PORT}"
 if [ "$INSTALL_CONSOLE" -eq 1 ] && command -v node >/dev/null 2>&1; then
   if [ "$START_CONSOLE" -eq 1 ]; then
     LOG_FILE="/tmp/liberta-console-${CONSOLE_PORT}-$$.log"
-    echo "==> Starting console on $CONSOLE_URL"
-    # Use `exec` inside the backgrounded subshell so the shell process that
-    # bash's $! refers to is replaced in-place by (eventually) node itself,
-    # rather than node being forked as a *grandchild* of an intermediate
-    # wrapper shell. Without `exec` here, $! captures the wrapper's pid, not
-    # node's pid, and the liveness checks below would be comparing against
-    # the wrong process.
-    ( cd "$SCRIPT_DIR/console" && exec env PORT="$CONSOLE_PORT" nohup node server.js ) > "$LOG_FILE" 2>&1 &
+    echo "==> Starting console (requested port: $CONSOLE_PORT)"
+    # Invoke node with the *absolute path* to server.js (instead of `cd`-ing
+    # into console/ and running the bare filename) so the process's argv
+    # contains a path component: `pgrep -f 'console/server.js'` needs that to
+    # find this process later (e.g. in cleanup/verify scripts). server.js
+    # resolves its own requires and static assets off __dirname, not cwd, so
+    # not `cd`-ing first is safe.
+    #
+    # No extra `exec`-wrapping subshell is needed to get the right pid into
+    # $!: `env` and `nohup` both exec their target in place rather than
+    # forking, so `env ... nohup node ...` collapses into a single process
+    # and bash's $! already refers to node's own pid.
+    env PORT="$CONSOLE_PORT" nohup node "$SCRIPT_DIR/console/server.js" > "$LOG_FILE" 2>&1 &
     SPAWNED_PID=$!
     disown
+
+    # Kill the process we spawned (if it's still alive) and print why, then
+    # exit non-zero. Used on every failure path below so a not-started (or
+    # not-yet-confirmed) console never survives as an orphan reparented to
+    # init.
+    fail() {
+      if [ -n "${SPAWNED_PID:-}" ] && kill -0 "$SPAWNED_PID" 2>/dev/null; then
+        kill "$SPAWNED_PID" 2>/dev/null || true
+      fi
+      echo "error: console did not start ($1)." >&2
+      echo "  Likely cause: the port is already in use by another process, or the console process failed to start/crashed." >&2
+      echo "  --- tail of $LOG_FILE ---" >&2
+      tail -n 20 "$LOG_FILE" >&2 2>/dev/null || echo "  (log file not found)" >&2
+      exit 1
+    }
+
+    # Resolve the ACTUAL bound port rather than trusting the requested one:
+    # PORT=0 (and a requested port that's already taken, if the port ends up
+    # reassigned) means the OS picks a real port, and server.js logs that
+    # real port on its own stdout line (`liberta-console listening on
+    # http://localhost:<port>`) the moment it binds. Wait for that line
+    # instead of guessing, so we never health-check port 0.
+    BOUND_PORT=""
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      if [ -n "$SPAWNED_PID" ] && ! kill -0 "$SPAWNED_PID" 2>/dev/null; then
+        # The process we spawned has already exited (e.g. crashed with
+        # EADDRINUSE) before ever logging a bound port.
+        fail "the process exited before reporting a listening port"
+      fi
+      BOUND_PORT="$(sed -nE 's#^liberta-console listening on http://[^:]+:([0-9]+)$#\1#p' "$LOG_FILE" 2>/dev/null | head -n1 || true)"
+      if [ -n "$BOUND_PORT" ]; then
+        break
+      fi
+      sleep 0.5
+    done
+
+    if [ -z "$BOUND_PORT" ]; then
+      fail "no listening port was ever logged by the console process"
+    fi
+
+    CONSOLE_URL="http://localhost:${BOUND_PORT}"
 
     up=0
     for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -164,7 +210,7 @@ if [ "$INSTALL_CONSOLE" -eq 1 ] && command -v node >/dev/null 2>&1; then
       if ! kill -0 "$SPAWNED_PID" 2>/dev/null; then
         up=0
       elif command -v lsof >/dev/null 2>&1; then
-        LISTEN_PID="$(lsof -nP -tiTCP:"$CONSOLE_PORT" -sTCP:LISTEN 2>/dev/null | head -n1 || true)"
+        LISTEN_PID="$(lsof -nP -tiTCP:"$BOUND_PORT" -sTCP:LISTEN 2>/dev/null | head -n1 || true)"
         if [ -n "$LISTEN_PID" ] && [ "$LISTEN_PID" != "$SPAWNED_PID" ]; then
           up=0
         fi
@@ -172,7 +218,7 @@ if [ "$INSTALL_CONSOLE" -eq 1 ] && command -v node >/dev/null 2>&1; then
     fi
 
     if [ "$up" -eq 1 ]; then
-      echo "  console running: $CONSOLE_URL"
+      echo "  console running: $CONSOLE_URL (pid $SPAWNED_PID)"
       if [ -n "${LIBERTA_CONSOLE_PASSWORD:-}" ]; then
         echo "  password:        (from LIBERTA_CONSOLE_PASSWORD, not shown here)"
       else
@@ -180,11 +226,7 @@ if [ "$INSTALL_CONSOLE" -eq 1 ] && command -v node >/dev/null 2>&1; then
         echo "  WARNING: using the insecure default password. Set LIBERTA_CONSOLE_PASSWORD before starting for anything durable."
       fi
     else
-      echo "error: console did not start (no response from $CONSOLE_URL after several seconds, or the port is already owned by a different, pre-existing process)." >&2
-      echo "  Likely cause: the port is already in use by another process, or the console process failed to start/crashed." >&2
-      echo "  --- tail of $LOG_FILE ---" >&2
-      tail -n 20 "$LOG_FILE" >&2 2>/dev/null || echo "  (log file not found)" >&2
-      exit 1
+      fail "no response from $CONSOLE_URL after several seconds, or the port is already owned by a different, pre-existing process"
     fi
   else
     echo "To run the console:"
