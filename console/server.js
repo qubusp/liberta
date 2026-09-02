@@ -20,7 +20,7 @@ const {
   createLoginRateLimiter,
 } = require("./auth");
 const { tailLines } = require("./tail");
-const { knex, ensureSchema, seedSkillsFromDisk } = require("./db");
+const { knex, ensureSchema, seedSkillsFromDisk, initDb } = require("./db");
 const { buildSessionGraph } = require("./session-graph");
 const { startSyncLoop } = require("./sync");
 const oauth = require("./auth-oauth");
@@ -79,6 +79,16 @@ const PORT = process.env.PORT ? Number(process.env.PORT) : 4177;
 // shot.mjs starts one per screenshot run) can opt into 127.0.0.1 and not
 // sit on every interface for the length of the run.
 const HOST = process.env.LIBERTA_CONSOLE_HOST || "0.0.0.0";
+// If set truthy, a second console started on an already-taken PORT scans
+// upward for a free one instead of refusing to start. Off by default: an
+// operator who explicitly set PORT almost certainly wants THAT port and
+// would rather see a clear refusal than silently end up somewhere else.
+const PORT_AUTO = /^(1|true|yes)$/i.test(
+  (process.env.LIBERTA_CONSOLE_PORT_AUTO || "").trim()
+);
+// Bounded number of upward probes when PORT_AUTO is on, so a truly saturated
+// range fails loudly instead of scanning forever.
+const PORT_AUTO_MAX_TRIES = 20;
 
 const app = express();
 // Express 4 disables case-sensitive routing by default, which means a
@@ -1512,21 +1522,95 @@ app.use((err, req, res, next) => {
 });
 
 // ---------------------------------------------------------------------
-// Boot: ensure the DB schema exists, start the background file->DB sync
-// loop, then start listening. The DB is a read cache synced from the
-// file-based run store -- the harness itself still writes files; see
-// db.js/sync.js and the README's "Database" section.
+// Bind the port, then boot the DB. Order matters twice over:
+//
+// 1. Bind before mutating anything. A second console that loses the port
+//    race must not have already created/altered a database file, so the
+//    schema/seed/sync steps only run AFTER app.listen's callback fires.
+// 2. The sqlite mirror's filename is a function of the port this process
+//    actually ends up bound to (see db.js's resolveDbFile), which is only
+//    known for certain once the bind succeeds -- PORT_AUTO can move it up
+//    from the requested port. So initDb() is called from inside the
+//    listen callback with the REAL bound port, never with the requested
+//    one.
+//
+// Binding itself: attempt `port`; if that's taken (EADDRINUSE), either
+// scan upward for a free one (PORT_AUTO) or exit non-zero with a clear,
+// actionable one-line message. Every other listen error also gets a
+// clear message and a non-zero exit instead of an unhandled stack trace.
+// ---------------------------------------------------------------------
+function listenWithRetry(port, triesLeft, onListening) {
+  const server = app.listen(port, HOST, () => {
+    // Read the real bound port back off the OS rather than trusting the
+    // `port` we asked for: PORT=0 asks the OS for an arbitrary free port
+    // (used by some test harnesses), and PORT_AUTO's retries also want the
+    // port actually granted, not merely the one requested.
+    const boundPort = server.address().port;
+    if (PORT_AUTO && boundPort !== PORT) {
+      process.stdout.write(
+        "NOTE: the requested PORT was already in use; " +
+          `LIBERTA_CONSOLE_PORT_AUTO picked free port ${boundPort} instead.\n`
+      );
+    }
+    // NOTE: the wording/format of the line below is a contract --
+    // console/scripts/shot.mjs matches "listening on http://localhost:<port>"
+    // on the child's stdout to prove the console it screenshots is the one
+    // it started. Don't reword it (the bind host deliberately isn't in it).
+    process.stdout.write(`liberta-console listening on http://localhost:${boundPort}\n`);
+    onListening(boundPort);
+  });
+
+  server.on("error", (err) => {
+    if (err && err.code === "EADDRINUSE") {
+      if (PORT_AUTO && triesLeft > 0) {
+        listenWithRetry(port + 1, triesLeft - 1, onListening);
+        return;
+      }
+      if (PORT_AUTO) {
+        process.stderr.write(
+          `FATAL: port ${PORT} and the ${PORT_AUTO_MAX_TRIES} ports above it ` +
+            "are all in use. Free one of them, set PORT to an open port, or " +
+            "stop the other console(s) and try again.\n"
+        );
+      } else {
+        process.stderr.write(
+          `FATAL: port ${port} is already in use (probably another ` +
+            "liberta-console instance). Set PORT to a free port, or set " +
+            "LIBERTA_CONSOLE_PORT_AUTO=1 to have this instance pick the next " +
+            "free port automatically.\n"
+        );
+      }
+      process.exit(1);
+      return;
+    }
+    process.stderr.write(
+      `FATAL: failed to start liberta-console: ${(err && err.message) || err}\n`
+    );
+    process.exit(1);
+  });
+}
+
+// ---------------------------------------------------------------------
+// Boot: bind the port first (see listenWithRetry above), then -- once the
+// real port is known -- create the DB connection scoped to it, ensure its
+// schema, seed it, and start the background file->DB sync loop. The DB is
+// a read cache synced from the file-based run store -- the harness itself
+// still writes files; see db.js/sync.js and the README's "Database"
+// section.
 // ---------------------------------------------------------------------
 async function main() {
-  await ensureSchema();
-  await seedSkillsFromDisk();
-  startSyncLoop();
-  // NOTE: the wording/format of the line below is a contract --
-  // console/scripts/shot.mjs matches "listening on http://localhost:<port>"
-  // on the child's stdout to prove the console it screenshots is the one it
-  // started. Don't reword it (the bind host deliberately isn't in it).
-  app.listen(PORT, HOST, () => {
-    process.stdout.write(`liberta-console listening on http://localhost:${PORT}\n`);
+  listenWithRetry(PORT, PORT_AUTO_MAX_TRIES, async (boundPort) => {
+    try {
+      initDb(boundPort);
+      await ensureSchema();
+      await seedSkillsFromDisk();
+      startSyncLoop();
+    } catch (err) {
+      process.stderr.write(
+        `FATAL: failed to initialize liberta-console database: ${(err && err.stack) || err}\n`
+      );
+      process.exit(1);
+    }
   });
 }
 
