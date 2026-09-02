@@ -1,7 +1,7 @@
 ---
 layout: doc
 title: The controller loop
-summary: How a run advances — mode selection, SETUP, LOOP, TERMINAL, and the wave-execution contract.
+summary: How a run advances - mode selection, SETUP, LOOP, TERMINAL, and the wave-execution contract.
 description: The Liberta controller does bookkeeping and dispatch, never implementation. This page covers SETUP, LOOP, TERMINAL, waves and the task board.
 sources: skills/liberta/SKILL.md
 ---
@@ -11,10 +11,10 @@ Every real unit of work goes to a fresh subagent with clean context; the
 controller reads back its verdict, persists state to disk, and decides
 whether to continue, escalate, or stop. This keeps the controller's own
 context flat regardless of how long the run goes, and means a crash or
-context reset never loses progress — everything that matters is already on
+context reset never loses progress - everything that matters is already on
 disk.
 
-## Step 0 — pick a mode
+## Step 0 - pick a mode
 
 - A bare `status`, `--status`, or `/liberta` with no goal text is the
   **status path**, not a run. See [Checking status]({{ '/docs/status/' | relative_url }}).
@@ -22,7 +22,7 @@ disk.
   points at a `running` session: go straight to **LOOP** for that session.
 - Otherwise this is a new goal: go to **SETUP**.
 
-## SETUP — once per new run
+## SETUP - once per new run
 
 1. Resolve the target project directory (`--project`, else inferred from the
    goal text, else ask once).
@@ -38,7 +38,7 @@ disk.
 4. Write `goal.md`: the goal verbatim, acceptance criteria, profile, a budget
    (`max_iterations`, `max_tokens`, `wall_deadline`), `allow_deploy`
    (default false), and any git-flow policy named in the goal text.
-5. Dispatch the planner to turn the goal into `plan.json` — a flat list of
+5. Dispatch the planner to turn the goal into `plan.json` - a flat list of
    tasks, each with a `role`, a `wave` number for ordering, `depends_on` for
    same-wave ordering, and a concrete `verify` step. Every task starts
    `status:"pending"`. For a research profile the planner also writes the
@@ -51,7 +51,7 @@ disk.
    on `base_branch`.
 8. Fall through to LOOP.
 
-## LOOP — one wake advances the current wave
+## LOOP - one wake advances the current wave
 
 **0. Drain the inbox first**, before even the budget check. Empty is normal.
 Otherwise, per message: a `steer` is folded into this wake (re-planning if it
@@ -80,7 +80,7 @@ is still building.
 
 Everything goes through `wave-exec`, including remediation passes. The
 controller never hand-dispatches a producer and never bundles several tasks
-into one "just fix these" dispatch — both paths skip role-based routing and
+into one "just fix these" dispatch - both paths skip role-based routing and
 skip the gates.
 
 **5. Record the wave.** Each passed task's branch is merged into the wave
@@ -91,7 +91,7 @@ pass, otherwise `attempts++` and `blocked`/`pending`. Token spend is added to
 `stuck_counter` increments, otherwise it resets to 0.
 
 **6. Periodic tidy.** Every fifth iteration, the janitor runs on the wave
-branch to keep the tree merge-ready — no behaviour change, just dead code,
+branch to keep the tree merge-ready - no behaviour change, just dead code,
 formatting and obvious duplication.
 
 **7. Wave PR, merge, checkpoint.** Once every task in the wave is done and
@@ -107,7 +107,7 @@ stops when supervised.
 1. The janitor does a final tidy.
 2. The chronicler writes the final report and updates the project's own log,
    using the terminal `status`.
-3. A push notification carries the outcome — "done", "stuck on `<task>`",
+3. A push notification carries the outcome - "done", "stuck on `<task>`",
    "budget exhausted", "converged: no defensible result", or "awaiting deploy
    approval".
 4. `index.json` is updated.
@@ -123,7 +123,7 @@ session and wave, and:
   reported in `role_warnings` rather than silently passing;
 - for a `style` task, or any task whose verify kind is `visual`, requires
   screenshots at a wide and a narrow viewport plus a non-regressing
-  accessibility score, from both the producer and the independent auditor —
+  accessibility score, from both the producer and the independent auditor -
   "could not render" is a failure, not a pass by default;
 - runs each producer on the task's assigned model tier and escalates one tier
   on a verify failure, retrying once before marking it blocked;
@@ -136,3 +136,17 @@ session and wave, and:
 
 It returns `[{task_id, passed, model_used, evidence, branch, merged, blocker}]`.
 The controller records these and never re-runs an already-merged task.
+
+## Concurrency across sessions
+
+Branch and worktree names created by `wave-exec` always include the session
+id (`liberta/<session-id>-wave<n>`, plus `-task-<task-id>` per task), so two
+sessions driving the same target repository at once can never name, reuse or
+delete each other's branches or worktrees. Worktree removal is fenced to
+paths inside the session's own wave directory, and no session ever prunes or
+removes another session's worktree or branch. `git worktree prune` is never
+run anywhere in this codebase, on purpose: it is a repo-wide operation that
+would silently deregister another live session's worktree registration, so
+cleanup always targets only the current session's own paths instead. See
+[Concurrency and parallel sessions]({{ '/docs/concurrency/' | relative_url }})
+for the full guarantees this run establishes.
