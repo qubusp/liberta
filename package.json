@@ -1,0 +1,15 @@
+{
+  "name": "liberta",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Liberta workspace. Tests use node's built-in test runner; no npm dependencies.",
+  "license": "MIT",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node scripts/run-tests.mjs",
+    "test:one": "node --test"
+  }
+}
