@@ -145,10 +145,6 @@ if [ "$INSTALL_CONSOLE" -eq 1 ] && command -v node >/dev/null 2>&1; then
     # wrapper shell. Without `exec` here, $! captures the wrapper's pid, not
     # node's pid, and the liveness checks below would be comparing against
     # the wrong process.
-    ( cd "$SCRIPT_DIR/console" && exec env PORT="$CONSOLE_PORT" nohup node "$SCRIPT_DIR/console/server.js" ) > "$LOG_FILE" 2>&1 &
-    SPAWNED_PID=$!
-    disown
-
     # Kill the process we spawned (if it's still alive) and wait briefly for
     # it to actually exit. Called on every failure/timeout path below so we
     # never leave an orphaned console process behind, even when the port we
@@ -168,6 +164,33 @@ if [ "$INSTALL_CONSOLE" -eq 1 ] && command -v node >/dev/null 2>&1; then
       done
       kill -9 "$SPAWNED_PID" 2>/dev/null || true
     }
+
+    # Reap whatever we are about to spawn on ANY exit path that is not a
+    # confirmed, reported success: the health-check timeout, a port owned by
+    # a different process, an unexpected `set -e` abort between here and the
+    # report, and SIGINT/SIGTERM/SIGHUP while we are still waiting. Without
+    # this, a console that comes up healthy on an address our localhost
+    # health check cannot reach (say LIBERTA_CONSOLE_HOST=127.0.0.2) would
+    # survive install.sh's non-zero exit, reparent to init and run forever.
+    # CONSOLE_HANDED_OFF flips to 1 only after we have printed "console
+    # running", i.e. only when leaving the process alive is the documented,
+    # intended outcome and its pid has been handed to the operator.
+    CONSOLE_HANDED_OFF=0
+    reap_console_unless_handed_off() {
+      if [ "${CONSOLE_HANDED_OFF:-0}" -eq 1 ]; then
+        return 0
+      fi
+      kill_spawned_console || true
+      return 0
+    }
+
+    ( cd "$SCRIPT_DIR/console" && exec env PORT="$CONSOLE_PORT" nohup node "$SCRIPT_DIR/console/server.js" ) > "$LOG_FILE" 2>&1 &
+    SPAWNED_PID=$!
+    disown
+    trap 'reap_console_unless_handed_off' EXIT
+    trap 'reap_console_unless_handed_off; trap - INT; kill -INT $$' INT
+    trap 'reap_console_unless_handed_off; exit 143' TERM
+    trap 'reap_console_unless_handed_off; exit 129' HUP
 
     # We cannot trust CONSOLE_PORT for the health check: PORT=0 (explicitly
     # supported by server.js for test harnesses) makes the OS assign a real
@@ -217,6 +240,9 @@ if [ "$INSTALL_CONSOLE" -eq 1 ] && command -v node >/dev/null 2>&1; then
     fi
 
     if [ "$up" -eq 1 ]; then
+      # The console answered and we confirmed we own the port, so leaving it
+      # running is the intended outcome: stand the reaper down.
+      CONSOLE_HANDED_OFF=1
       echo "  console running: $CONSOLE_URL"
       echo "  pid:             $SPAWNED_PID"
       if [ -n "${LIBERTA_CONSOLE_PASSWORD:-}" ]; then
