@@ -1,5 +1,12 @@
 #!/usr/bin/env node
-// Test entrypoint for `npm test`.
+// Test entrypoint for `npm test` and `npm run test:one`.
+//
+// When invoked with no positional arguments, this discovers and runs every
+// *.test.mjs file under test/ (see below for why). When invoked with one or
+// more positional arguments (e.g. `npm run test:one -- test/foo.test.mjs`),
+// those explicit file paths are run instead of doing discovery, so a single
+// test file (including one that does not follow the *.test.mjs naming
+// convention, as long as it is named explicitly) can still be run directly.
 //
 // Why this exists instead of a plain `node --test test/`:
 //   * Passing a bare DIRECTORY positionally to `node --test` throws
@@ -17,7 +24,7 @@
 // paths are fine positionally; only the bare-directory form is broken.
 import { spawnSync } from 'node:child_process';
 import { readdirSync, existsSync } from 'node:fs';
-import { join, relative, dirname } from 'node:path';
+import { join, relative, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -40,17 +47,32 @@ function discover(dir) {
   return found;
 }
 
-if (!existsSync(testRoot)) {
-  console.error(`[run-tests] no test directory at ${testRoot}`);
-  process.exit(1);
-}
+const explicitArgs = process.argv.slice(2);
 
-const files = discover(testRoot).sort();
+let files;
+if (explicitArgs.length > 0) {
+  // Explicit file(s) given (e.g. `npm run test:one -- test/foo.test.mjs`):
+  // run exactly those, no discovery, no recursive fallback.
+  files = explicitArgs.map((f) => resolve(repoRoot, f));
+  for (const f of files) {
+    if (!existsSync(f)) {
+      console.error(`[run-tests] no such file: ${relative(repoRoot, f)}`);
+      process.exit(1);
+    }
+  }
+} else {
+  if (!existsSync(testRoot)) {
+    console.error(`[run-tests] no test directory at ${testRoot}`);
+    process.exit(1);
+  }
 
-if (files.length === 0) {
-  console.error('[run-tests] no test files found (looked for **/*.test.mjs under test/).');
-  console.error('[run-tests] refusing to report success for a run with zero tests.');
-  process.exit(1);
+  files = discover(testRoot).sort();
+
+  if (files.length === 0) {
+    console.error('[run-tests] no test files found (looked for **/*.test.mjs under test/).');
+    console.error('[run-tests] refusing to report success for a run with zero tests.');
+    process.exit(1);
+  }
 }
 
 // Node's default reporter varies by version; pin it so piped output is stable
