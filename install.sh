@@ -131,7 +131,7 @@ CONSOLE_URL="http://localhost:${CONSOLE_PORT}"
 
 if [ "$INSTALL_CONSOLE" -eq 1 ] && command -v node >/dev/null 2>&1; then
   if [ "$START_CONSOLE" -eq 1 ]; then
-    LOG_FILE="/tmp/liberta-console.log"
+    LOG_FILE="/tmp/liberta-console-${CONSOLE_PORT}-$$.log"
     echo "==> Starting console on $CONSOLE_URL"
     ( cd "$SCRIPT_DIR/console" && PORT="$CONSOLE_PORT" nohup node server.js > "$LOG_FILE" 2>&1 & disown )
 
