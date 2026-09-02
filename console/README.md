@@ -60,6 +60,48 @@ warning to stderr at boot whenever the default is in effect. Set
 sessions to survive a restart with a stable secret) or reachable over a
 network by anyone besides you.
 
+## Running two consoles side by side
+
+Each console instance is scoped to one `PORT` and, by default, one sqlite
+mirror file, so two instances can run at once without stepping on each
+other -- see "Database" below for exactly how the sqlite path is chosen, and
+[Concurrency and parallel sessions](../site/docs/concurrency.md) for the
+full audit of every place two Liberta processes can otherwise collide on
+one machine.
+
+Three environment variables control this:
+
+- `PORT` (with `LIBERTA_CONSOLE_PORT_AUTO=1` to auto-advance past a taken
+  port, see above) -- which port this instance binds.
+- `LIBERTA_CONSOLE_DB=/some/path.sqlite` -- an explicit override that makes
+  this instance use exactly that sqlite file. Two instances must never be
+  pointed at the same file unless that's a deliberate, explicit choice: the
+  background sync loop reaps rows for anything absent from the run store it
+  is currently syncing, so two instances quietly sharing one file would each
+  erase the other's rows on every sync tick.
+- `LIBERTA_RUNS_DIR=/some/throwaway/dir` -- points this instance at a
+  *different run store* entirely, instead of the real operator store at
+  `~/.claude/liberta-runs/`. **This exists for tests and other throwaway,
+  disposable invocations, not for production use.** Pointing a production
+  console at the wrong store means it shows the wrong runs -- either an old
+  or unrelated set of sessions, or nothing at all, depending on what's in
+  that directory. Never set `LIBERTA_RUNS_DIR` for a console an operator
+  actually relies on.
+
+A worked example, two independent consoles on one machine, each with its
+own port and its own throwaway run store and sqlite mirror:
+
+```
+PORT=4177 LIBERTA_RUNS_DIR=/tmp/liberta-run-a LIBERTA_CONSOLE_PASSWORD='a' npm start &
+PORT=4178 LIBERTA_RUNS_DIR=/tmp/liberta-run-b LIBERTA_CONSOLE_PASSWORD='b' npm start &
+```
+
+The first instance's sqlite mirror lands at
+`/tmp/liberta-run-a/console-data/liberta-4177.sqlite`, the second's at
+`/tmp/liberta-run-b/console-data/liberta-4178.sqlite` -- two different run
+stores, two different ports, two different database files, so neither
+instance ever reads, reaps or overwrites the other's data.
+
 ## Auth model
 
 - Single-operator tool: one shared password, no username, no accounts.
@@ -172,8 +214,10 @@ Two supported backends, picked via `DB_CLIENT`:
      explicit override, and the one way two instances CAN deliberately
      share a database.
   2. If `LIBERTA_RUNS_DIR` is set (pointing this console at a non-default
-     run store, e.g. in tests), the file lives inside that store, named
-     `liberta-<port>.sqlite`.
+     run store, e.g. in tests), the file lives inside a `console-data/`
+     subdirectory of that store, named `liberta-<port>.sqlite` --
+     i.e. `<LIBERTA_RUNS_DIR>/console-data/liberta-<port>.sqlite`, not
+     directly at the store's root.
   3. Otherwise: `console/data/liberta.sqlite` if bound to the canonical
      default port 4177 (byte-identical to existing installs), or
      `console/data/liberta-<port>.sqlite` for any other port.

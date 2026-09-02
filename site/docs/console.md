@@ -46,6 +46,45 @@ Whenever the default is in effect, the server prints a warning to stderr at
 boot. Set `LIBERTA_CONSOLE_PASSWORD` to a real secret for anything durable
 or reachable over a network.
 
+## Running a second console
+
+A second console started on a `PORT` that is already taken exits with a
+one-line `FATAL:` message naming the port, rather than crashing with a raw
+`EADDRINUSE` stack trace. Setting `LIBERTA_CONSOLE_PORT_AUTO=1` makes it
+scan upward from `PORT` instead, for up to 20 ports, and log which one it
+actually bound -- useful for running several consoles side by side, e.g.
+one per test run.
+
+Two more overrides matter once more than one instance is running:
+
+- `LIBERTA_CONSOLE_DB=/some/path.sqlite` forces this instance's sqlite
+  mirror to that exact file. Two instances must never share one sqlite
+  file unless this is set deliberately on both: the background sync loop
+  reaps any row whose subject is absent from the run store it is
+  currently syncing, so two instances sharing a file would each erase the
+  other's rows on every sync tick.
+- `LIBERTA_RUNS_DIR=/some/throwaway/dir` points this instance at a
+  different run store entirely, instead of the real operator store at
+  `~/.claude/liberta-runs/`. **This exists for tests and other throwaway,
+  disposable invocations, not for production use** -- pointing a
+  production console at the wrong store means it shows the wrong runs.
+
+Worked example, two independent consoles on one machine:
+
+```
+PORT=4177 LIBERTA_RUNS_DIR=/tmp/liberta-run-a LIBERTA_CONSOLE_PASSWORD='a' npm start &
+PORT=4178 LIBERTA_RUNS_DIR=/tmp/liberta-run-b LIBERTA_CONSOLE_PASSWORD='b' npm start &
+```
+{: tabindex="0"}
+
+The first instance's sqlite mirror lands at
+`/tmp/liberta-run-a/console-data/liberta-4177.sqlite`, the second's at
+`/tmp/liberta-run-b/console-data/liberta-4178.sqlite` -- see "Database"
+below for the file's naming rules, and
+[Concurrency and parallel sessions]({{ '/docs/concurrency/' | relative_url }})
+for the full audit of every place two Liberta processes can otherwise
+collide on one machine.
+
 ## Status states
 
 Every run and every task shows its status as a pill. The console colours it
@@ -121,10 +160,19 @@ database exists. If a run was just created and the sync loop has not caught up
 yet, `GET /api/sessions/:id` falls back to reading the files directly for that
 one request.
 
-Two backends, picked with `DB_CLIENT`: `sqlite3` (the default, a local file at
-`console/data/liberta.sqlite`, gitignored and never committed) and `pg`, which
-additionally requires `DATABASE_URL` and fails loudly on boot without it
-rather than silently falling back.
+Two backends, picked with `DB_CLIENT`: `sqlite3` (the default, a local file,
+gitignored and never committed) and `pg`, which additionally requires
+`DATABASE_URL` and fails loudly on boot without it rather than silently
+falling back.
+
+The sqlite file's path depends on port and store, resolved in this order:
+an explicit `LIBERTA_CONSOLE_DB=/some/path.sqlite` always wins; otherwise,
+if `LIBERTA_RUNS_DIR` is set, the file lives inside a `console-data/`
+subdirectory of that run store, named `liberta-<port>.sqlite` (i.e.
+`<LIBERTA_RUNS_DIR>/console-data/liberta-<port>.sqlite`); otherwise it is
+`console/data/liberta.sqlite` on the canonical default port 4177
+(byte-identical to existing installs), or `console/data/liberta-<port>.sqlite`
+for any other port. See "Running a second console" above.
 
 ## The skills library
 
