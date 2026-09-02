@@ -10,6 +10,6 @@
   },
   "scripts": {
     "test": "node scripts/run-tests.mjs",
-    "test:one": "node --test"
+    "test:one": "node scripts/run-tests.mjs"
   }
 }
