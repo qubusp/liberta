@@ -26,16 +26,25 @@ const { startSyncLoop } = require("./sync");
 const oauth = require("./auth-oauth");
 
 // ---------------------------------------------------------------------
-// Boot-time password check. Never fall back to a default/blank password
-// -- fail loudly and refuse to start instead.
+// Boot-time password check. If LIBERTA_CONSOLE_PASSWORD is unset or empty,
+// fall back to a built-in default password so the server can still start
+// (intended for local single-operator use only) and print a loud warning.
+// If LIBERTA_CONSOLE_PASSWORD is set and non-empty, it always wins.
 // ---------------------------------------------------------------------
-const ADMIN_PASSWORD = process.env.LIBERTA_CONSOLE_PASSWORD;
-if (!ADMIN_PASSWORD || ADMIN_PASSWORD.length === 0) {
+const DEFAULT_ADMIN_PASSWORD = "libert@123!";
+const envPassword = process.env.LIBERTA_CONSOLE_PASSWORD;
+const ADMIN_PASSWORD =
+  envPassword && envPassword.length > 0 ? envPassword : DEFAULT_ADMIN_PASSWORD;
+if (!envPassword || envPassword.length === 0) {
   process.stderr.write(
-    "FATAL: LIBERTA_CONSOLE_PASSWORD is not set. Refusing to start with no " +
-      "password configured. Set LIBERTA_CONSOLE_PASSWORD and try again.\n"
+    "WARNING: LIBERTA_CONSOLE_PASSWORD is not set.\n" +
+      "WARNING: The console is running with the built-in default password " +
+      `"${DEFAULT_ADMIN_PASSWORD}".\n` +
+      "WARNING: This is insecure and is intended for local single-operator " +
+      "use only.\n" +
+      "WARNING: Set LIBERTA_CONSOLE_PASSWORD to a strong value for anything " +
+      "durable or network reachable.\n"
   );
-  process.exit(1);
 }
 
 // Secret used to HMAC-sign session cookies. If LIBERTA_CONSOLE_SECRET isn't
