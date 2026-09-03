@@ -252,7 +252,21 @@ if [ "$INSTALL_CONSOLE" -eq 1 ] && command -v node >/dev/null 2>&1; then
         CANDIDATE_URL="http://${PROBE_HOST_URL}:${BOUND_PORT}"
         if curl -s -o /dev/null -w '%{http_code}' "$CANDIDATE_URL/login" 2>/dev/null | grep -q '^200$'; then
           up=1
-          CONSOLE_URL="http://localhost:${BOUND_PORT}"
+          if [ -n "${LIBERTA_CONSOLE_HOST:-}" ]; then
+            # The operator explicitly restricted the bind to one address
+            # family via LIBERTA_CONSOLE_HOST. Show the literal address we
+            # just verified reachable (PROBE_HOST_URL, bracketed if IPv6)
+            # instead of substituting the bare hostname "localhost": on a
+            # machine whose resolver prefers the OTHER address family than
+            # the one the operator restricted the bind to, a hardcoded
+            # "localhost" URL would not actually reach this console even
+            # though it is genuinely healthy. Leave the unset/default case
+            # (server.js binds the wildcard 0.0.0.0, reachable via either
+            # family) showing "localhost" as before.
+            CONSOLE_URL="http://${PROBE_HOST_URL}:${BOUND_PORT}"
+          else
+            CONSOLE_URL="http://localhost:${BOUND_PORT}"
+          fi
           CONSOLE_PORT="$BOUND_PORT"
           break
         fi
