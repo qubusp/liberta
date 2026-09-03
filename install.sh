@@ -292,6 +292,52 @@ if [ "$INSTALL_CONSOLE" -eq 1 ] && command -v node >/dev/null 2>&1; then
         PROBE_HOST_URL="$PROBE_HOST"
         ;;
     esac
+    # When the operator restricted the bind with LIBERTA_CONSOLE_HOST, the
+    # friendly "localhost" URL is only worth advertising if "localhost" really
+    # reaches THIS console and nothing else. Decide that from evidence rather
+    # than from a guess in either direction: resolve every address localhost
+    # maps to on this machine and try a TCP connect to each on the bound port.
+    # Answer yes only when exactly one of them accepts a connection and it is
+    # the address we just health-checked. That rules out both failure modes:
+    # printing "localhost" when the resolver prefers an address family the
+    # console never bound (operator is handed a URL that does not work), and
+    # printing "localhost" when some unrelated process holds the same port on
+    # the other address family (operator is silently pointed at someone else).
+    # Any error, ambiguity or missing answer exits non-zero, so the caller
+    # falls back to the literal verified address, which is always correct.
+    localhost_reaches_only_our_console() {
+      local addr="$1"
+      local port="$2"
+      node -e '
+const dns = require("dns");
+const net = require("net");
+const want = process.argv[1];
+const port = Number(process.argv[2]);
+dns.lookup("localhost", { all: true }, (err, addrs) => {
+  if (err || !addrs || addrs.length === 0) { process.exit(1); }
+  let pending = addrs.length;
+  const accepting = new Set();
+  for (const a of addrs) {
+    const sock = net.connect({ host: a.address, port: port, family: a.family });
+    sock.setTimeout(1000);
+    const settle = (ok) => {
+      if (settle.done) { return; }
+      settle.done = true;
+      if (ok) { accepting.add(a.address); }
+      sock.destroy();
+      pending -= 1;
+      if (pending === 0) {
+        process.exit(accepting.size === 1 && accepting.has(want) ? 0 : 1);
+      }
+    };
+    sock.once("connect", () => settle(true));
+    sock.once("error", () => settle(false));
+    sock.once("timeout", () => settle(false));
+  }
+});
+' "$addr" "$port" >/dev/null 2>&1
+    }
+
     up=0
     BOUND_PORT=""
     for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
@@ -311,19 +357,21 @@ if [ "$INSTALL_CONSOLE" -eq 1 ] && command -v node >/dev/null 2>&1; then
         CANDIDATE_URL="http://${PROBE_HOST_URL}:${BOUND_PORT}"
         if curl -s -o /dev/null -w '%{http_code}' "$CANDIDATE_URL/login" 2>/dev/null | grep -q '^200$'; then
           up=1
-          if [ -n "${LIBERTA_CONSOLE_HOST:-}" ]; then
+          if [ -n "${LIBERTA_CONSOLE_HOST:-}" ] \
+             && ! localhost_reaches_only_our_console "$PROBE_HOST" "$BOUND_PORT"; then
             # The operator explicitly restricted the bind to one address
-            # family via LIBERTA_CONSOLE_HOST. Show the literal address we
-            # just verified reachable (PROBE_HOST_URL, bracketed if IPv6)
-            # instead of substituting the bare hostname "localhost": on a
-            # machine whose resolver prefers the OTHER address family than
-            # the one the operator restricted the bind to, a hardcoded
-            # "localhost" URL would not actually reach this console even
-            # though it is genuinely healthy. Leave the unset/default case
-            # (server.js binds the wildcard 0.0.0.0, reachable via either
-            # family) showing "localhost" as before.
+            # family via LIBERTA_CONSOLE_HOST, and "localhost" on this machine
+            # does not demonstrably land on that same address (it resolves
+            # elsewhere first, or something else answers there too). Show the
+            # literal address we just verified reachable (PROBE_HOST_URL,
+            # bracketed if IPv6) rather than a "localhost" URL that would not
+            # actually reach this console even though it is genuinely healthy.
             CONSOLE_URL="http://${PROBE_HOST_URL}:${BOUND_PORT}"
           else
+            # Either the bind was left at server.js's wildcard default
+            # (0.0.0.0, reachable via localhost by construction), or localhost
+            # was just proven to reach this very console and nothing else. Show
+            # the documented, friendlier localhost URL.
             CONSOLE_URL="http://localhost:${BOUND_PORT}"
           fi
           CONSOLE_PORT="$BOUND_PORT"
