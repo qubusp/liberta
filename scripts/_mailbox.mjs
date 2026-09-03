@@ -10,16 +10,13 @@
 
 import fs from "fs";
 import path from "path";
-import os from "os";
 import crypto from "crypto";
+import { runsRoot } from "./_store.mjs";
+import { writeFileAtomicSync } from "./_locked-json.mjs";
 
 function fail(msg) {
   process.stderr.write(`_mailbox: ${msg}\n`);
   process.exit(1);
-}
-
-function runsRoot() {
-  return path.join(os.homedir(), ".claude", "liberta-runs");
 }
 
 function inboxDir(sessionId) {
@@ -62,13 +59,14 @@ function readJson(filePath, fallback) {
 }
 
 function writeJsonAtomic(filePath, obj) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  // Message files carry operator-authored steer/question text: keep them
+  // tmp + fsync + rename (see writeFileAtomicSync in scripts/_locked-json.cjs).
+  // The fsync is what makes the rename meaningful: without it the rename can
+  // reach disk before the tmp file's bytes do, so a crash can leave an
+  // EMPTY message file where a complete one is expected. Message files carry
+  // operator-authored steer/question text: mode 0600 keeps them
   // readable/writable by the owner only (not group/world), overriding the
   // process umask.
-  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + "\n", { mode: 0o600 });
-  fs.renameSync(tmp, filePath);
+  writeFileAtomicSync(filePath, JSON.stringify(obj, null, 2) + "\n", 0o600);
 }
 
 function cmdList(sessionId) {

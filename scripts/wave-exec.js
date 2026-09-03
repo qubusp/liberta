@@ -36,28 +36,179 @@
 //      spend as JSON to stdout, then tears down every worktree created for
 //      this wave (git worktree remove), regardless of outcome.
 
+// ---------------------------------------------------------------------------
+// NAMING AND OWNERSHIP INVARIANTS (see site/docs/concurrency.md section 5)
+//
+// Every ref and every directory this script creates or destroys is scoped to
+// exactly one (session id, wave) pair, so two controllers driving two sessions
+// in the same repository at the same time can never name, reuse or delete each
+// other's things.
+//
+//  I1. SESSION ID SHAPE. A session id must match
+//      /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/ and must not contain "..", must
+//      not end in ".lock" or ".", and must not be "@". Anything else exits
+//      non-zero with a clear message instead of being pasted into a ref name
+//      or a path. Wave numbers must be non-negative integers; task ids must
+//      match /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/ with the same "..") ban.
+//      Because the character set excludes "/", "liberta/<id>-wave<n>" always
+//      has exactly two path components and the id can never inject one.
+//
+//  I2. BRANCH NAMES. Wave branch  = liberta/<session-id>-wave<n>.
+//      Task branch  = <wave-branch>-task-<task-id>.
+//      Both are derived only from validated inputs, so distinct session ids
+//      yield disjoint branch names, and every branch this script touches has
+//      the prefix "liberta/<session-id>-wave<n>".
+//
+//  I3. BRANCH OWNERSHIP IS EXPLICIT. A branch is "ours" only if this session
+//      recorded it in <waveDir>/owned-branches.json (or in this wave's own
+//      dispatch-plan.json / wave-state.json, for runs created before that file
+//      existed). If a branch of the target name already exists in the repo and
+//      is NOT recorded as ours, that is a foreign collision: we fail loudly
+//      rather than silently checking out somebody else's work.
+//
+//  I4. WORKTREE PATHS. Every worktree lives under
+//      <run-store>/<session-id>/waves/<n>/ -- per-task trees under
+//      .../worktrees/<task-id>, the merge tree at .../merge. Nothing is ever
+//      created in os.tmpdir() or anywhere else shared.
+//
+//  I5. REMOVAL IS FENCED. worktreeRemove() and the summary teardown loop
+//      resolve the target path (realpath, so symlinks cannot smuggle a path
+//      in) and refuse, with a clear message and a non-zero exit, to act on any
+//      path that is not inside this session's own wave directory. A worktree
+//      still holding merge conflicts is never force-removed.
+//
+//  I6. BANNED COMMANDS. This script -- and the repo as a whole -- never runs
+//      the "worktree" + "prune" subcommand (it would silently deregister
+//      another live session's tree), never removes a worktree outside the
+//      current session (I5), and never force-deletes a branch (the -D form of
+//      git branch). Cleanup is per-path, per-session and non-destructive to
+//      refs. If you ever need pruning, filter it to this session's own paths;
+//      a bare prune is a repo-wide operation and is not allowed here.
+// ---------------------------------------------------------------------------
+
 "use strict";
 
 const fs = require("fs");
 const path = require("path");
-const os = require("os");
 const { execFileSync } = require("child_process");
+const { runsRoot, sessionDir } = require("./_store.cjs");
 
 function fail(msg) {
   process.stderr.write(`wave-exec: ${msg}\n`);
   process.exit(1);
 }
 
-function runsRoot() {
-  return path.join(os.homedir(), ".claude", "liberta-runs");
+// --- I1: strict identifier validation -----------------------------------
+
+const SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const TASK_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+function badIdReason(value, re, kind) {
+  if (typeof value !== "string" || value.length === 0) {
+    return `${kind} must be a non-empty string`;
+  }
+  if (!re.test(value)) {
+    return (
+      `${kind} ${JSON.stringify(value)} is not allowed: it must match ${re} ` +
+      `(letters, digits, dot, dash, underscore; must start with a letter or digit)`
+    );
+  }
+  if (value.includes("..")) return `${kind} ${JSON.stringify(value)} must not contain ".."`;
+  if (value.endsWith(".")) return `${kind} ${JSON.stringify(value)} must not end with "."`;
+  if (value.endsWith(".lock")) return `${kind} ${JSON.stringify(value)} must not end with ".lock"`;
+  return null;
 }
 
-function sessionDir(sessionId) {
-  return path.join(runsRoot(), sessionId);
+function assertSessionId(sessionId) {
+  const why = badIdReason(sessionId, SESSION_ID_RE, "session id");
+  if (why) {
+    fail(
+      `${why}. Refusing to build a git ref or run-store path from it ` +
+        `(see NAMING AND OWNERSHIP INVARIANTS at the top of this file).`
+    );
+  }
+  return sessionId;
+}
+
+function assertWave(wave) {
+  const str = String(wave);
+  if (!/^\d{1,6}$/.test(str)) {
+    fail(
+      `wave ${JSON.stringify(String(wave))} is not allowed: it must be a non-negative integer. ` +
+        `Refusing to build a git ref or run-store path from it.`
+    );
+  }
+  return str;
+}
+
+function assertTaskId(taskId) {
+  const why = badIdReason(String(taskId), TASK_ID_RE, "task id");
+  if (why) {
+    fail(
+      `${why}. Refusing to build a git ref or run-store path from it ` +
+        `(see NAMING AND OWNERSHIP INVARIANTS at the top of this file).`
+    );
+  }
+  return String(taskId);
+}
+
+// --- I2: the only two places branch names are constructed ----------------
+
+function waveBranchName(sessionId, wave) {
+  assertSessionId(sessionId);
+  assertWave(wave);
+  return `liberta/${sessionId}-wave${wave}`;
+}
+
+function taskBranchName(sessionId, wave, taskId) {
+  return `${waveBranchName(sessionId, wave)}-task-${assertTaskId(taskId)}`;
 }
 
 function waveDir(sessionId, wave) {
+  assertSessionId(sessionId);
+  assertWave(wave);
   return path.join(sessionDir(sessionId), "waves", String(wave));
+}
+
+// --- I5: resolved-path containment ---------------------------------------
+
+// realpath() as much of the path as exists, so a symlinked ancestor (e.g.
+// /var -> /private/var on macOS) can neither defeat nor forge containment.
+function resolveReal(p) {
+  let cur = path.resolve(String(p));
+  const tail = [];
+  for (;;) {
+    try {
+      const real = fs.realpathSync(cur);
+      return tail.length ? path.join(real, ...tail.slice().reverse()) : real;
+    } catch (err) {
+      if (err.code !== "ENOENT") return path.resolve(String(p));
+      const parent = path.dirname(cur);
+      if (parent === cur) return path.resolve(String(p));
+      tail.push(path.basename(cur));
+      cur = parent;
+    }
+  }
+}
+
+function isInside(child, parent) {
+  const c = resolveReal(child);
+  const p = resolveReal(parent);
+  return c === p || c.startsWith(p.endsWith(path.sep) ? p : p + path.sep);
+}
+
+// Every destructive worktree operation goes through this fence first.
+function assertOwnedWorktreePath(worktreePath, sessionId, wave) {
+  const root = waveDir(sessionId, wave);
+  if (!worktreePath || !isInside(worktreePath, root)) {
+    fail(
+      `refusing to touch worktree ${JSON.stringify(String(worktreePath))}: it resolves to ` +
+        `${JSON.stringify(resolveReal(worktreePath || ""))}, which is outside this session's own wave ` +
+        `directory ${JSON.stringify(resolveReal(root))}. Another session may own it ` +
+        `(invariant I5, see the top of this file).`
+    );
+  }
+  return worktreePath;
 }
 
 function readJson(filePath, fallback) {
@@ -159,28 +310,111 @@ function branchExists(gitRoot, branch) {
   return gitOk(gitRoot, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
 }
 
-function ensureWaveBranch(gitRoot, waveBranch, baseBranch) {
-  if (branchExists(gitRoot, waveBranch)) return;
+// --- I3: explicit branch ownership ---------------------------------------
+
+function ownedBranchesPath(sessionId, wave) {
+  return path.join(waveDir(sessionId, wave), "owned-branches.json");
+}
+
+function loadOwnedBranches(sessionId, wave) {
+  const owned = new Set();
+  const rec = readJson(ownedBranchesPath(sessionId, wave), null);
+  if (rec && Array.isArray(rec.branches)) {
+    for (const b of rec.branches) owned.add(String(b));
+  }
+  // Runs created before owned-branches.json existed still prove ownership
+  // through their own wave bookkeeping, which lives in this session's dir.
+  const dp = readJson(path.join(waveDir(sessionId, wave), "dispatch-plan.json"), null);
+  if (dp) {
+    if (dp.wave_branch) owned.add(String(dp.wave_branch));
+    if (Array.isArray(dp.tasks)) {
+      for (const e of dp.tasks) if (e && e.branch) owned.add(String(e.branch));
+    }
+  }
+  const st = readJson(path.join(waveDir(sessionId, wave), "wave-state.json"), null);
+  if (st && st.wave_branch) owned.add(String(st.wave_branch));
+  return owned;
+}
+
+function claimBranch(sessionId, wave, branch) {
+  const file = ownedBranchesPath(sessionId, wave);
+  const rec = readJson(file, null) || {};
+  const list = Array.isArray(rec.branches) ? rec.branches.slice() : [];
+  if (!list.includes(branch)) list.push(branch);
+  writeJsonAtomic(file, {
+    session_id: sessionId,
+    wave: Number(wave),
+    branches: list,
+    updated_at: new Date().toISOString(),
+  });
+}
+
+// Returns "created" or "reused"; exits non-zero on a foreign collision.
+function claimBranchOwnership(gitRoot, branch, sessionId, wave, startPoint) {
+  const prefix = waveBranchName(sessionId, wave);
+  if (branch !== prefix && !branch.startsWith(`${prefix}-`)) {
+    fail(
+      `refusing to use branch ${JSON.stringify(branch)}: it is not scoped to this session's ` +
+        `wave branch ${JSON.stringify(prefix)} (invariant I2).`
+    );
+  }
+  const exists = branchExists(gitRoot, branch);
+  if (exists && !loadOwnedBranches(sessionId, wave).has(branch)) {
+    fail(
+      `branch ${JSON.stringify(branch)} already exists in ${gitRoot} but is NOT owned by ` +
+        `session ${JSON.stringify(sessionId)} wave ${wave} (it is not recorded in ` +
+        `${ownedBranchesPath(sessionId, wave)}). Refusing to reuse another owner's branch. ` +
+        `Resolve the collision by hand -- this script never force-deletes refs (invariant I6).`
+    );
+  }
+  if (!exists) {
+    if (startPoint !== undefined && startPoint !== null) {
+      git(gitRoot, ["branch", branch, startPoint]);
+    }
+    claimBranch(sessionId, wave, branch);
+    return "created";
+  }
+  claimBranch(sessionId, wave, branch);
+  return "reused";
+}
+
+function ensureWaveBranch(gitRoot, waveBranch, baseBranch, sessionId, wave) {
   const base = baseBranch || currentBranch(gitRoot);
-  git(gitRoot, ["branch", waveBranch, base]);
+  claimBranchOwnership(gitRoot, waveBranch, sessionId, wave, base);
 }
 
 function currentBranch(gitRoot) {
   return git(gitRoot, ["rev-parse", "--abbrev-ref", "HEAD"]).trim();
 }
 
-function worktreeAdd(gitRoot, worktreePath, branch, startPoint) {
+// Adds a worktree for a branch this session owns, at a path inside this
+// session's own wave directory. Both facts are asserted, not assumed: a
+// foreign branch of the same name, or a path outside the wave directory,
+// exits non-zero rather than silently doing the wrong thing.
+function worktreeAdd(gitRoot, worktreePath, branch, startPoint, sessionId, wave) {
+  assertOwnedWorktreePath(worktreePath, sessionId, wave);
+  const state = claimBranchOwnership(gitRoot, branch, sessionId, wave, null);
   if (fs.existsSync(worktreePath)) return; // idempotent
   fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
-  if (branchExists(gitRoot, branch)) {
+  if (state === "reused") {
     git(gitRoot, ["worktree", "add", worktreePath, branch]);
   } else {
     git(gitRoot, ["worktree", "add", "-b", branch, worktreePath, startPoint]);
   }
 }
 
-function worktreeRemove(gitRoot, worktreePath) {
+// The only removal path in this file. It refuses any target that is not
+// inside this session's own wave directory (invariant I5), and never removes
+// a tree that still holds merge conflicts.
+function worktreeRemove(gitRoot, worktreePath, sessionId, wave) {
+  assertOwnedWorktreePath(worktreePath, sessionId, wave);
   if (!fs.existsSync(worktreePath)) return;
+  if (hasConflict(worktreePath)) {
+    process.stderr.write(
+      `wave-exec: keeping worktree ${worktreePath} -- it still has unresolved merge conflicts\n`
+    );
+    return;
+  }
   try {
     git(gitRoot, ["worktree", "remove", "--force", worktreePath]);
   } catch (err) {
@@ -311,9 +545,9 @@ function modeGenerate(sessionId, wave, opts) {
     }
   }
 
-  const waveBranch = `liberta/${sessionId}-wave${wave}`;
+  const waveBranch = waveBranchName(sessionId, wave);
   const baseBranch = goal.base_branch || currentBranch(gitRoot);
-  ensureWaveBranch(gitRoot, waveBranch, baseBranch);
+  ensureWaveBranch(gitRoot, waveBranch, baseBranch, sessionId, wave);
 
   const wdir = waveDir(sessionId, wave);
   const worktreesRoot = path.join(wdir, "worktrees");
@@ -326,9 +560,9 @@ function modeGenerate(sessionId, wave, opts) {
     if (warned) {
       roleWarnings.push({ task_id: task.id, role: task.role });
     }
-    const worktreePath = path.join(worktreesRoot, String(task.id));
-    const taskBranch = `${waveBranch}-task-${task.id}`;
-    worktreeAdd(gitRoot, worktreePath, taskBranch, waveBranch);
+    const worktreePath = path.join(worktreesRoot, assertTaskId(task.id));
+    const taskBranch = taskBranchName(sessionId, wave, task.id);
+    worktreeAdd(gitRoot, worktreePath, taskBranch, waveBranch, sessionId, wave);
 
     entries.push({
       task_id: task.id,
@@ -444,8 +678,20 @@ function modeRecord(sessionId, wave, taskId, opts, flags) {
   const wdir = waveDir(sessionId, wave);
   const dispatchPlan = readJson(path.join(wdir, "dispatch-plan.json"), null);
   const dpEntry = dispatchPlan && dispatchPlan.tasks.find((e) => String(e.task_id) === String(taskId));
-  const waveBranch = (dispatchPlan && dispatchPlan.wave_branch) || `liberta/${sessionId}-wave${wave}`;
-  const taskBranch = (dpEntry && dpEntry.branch) || `${waveBranch}-task-${taskId}`;
+  const waveBranch = waveBranchName(sessionId, wave);
+  if (dispatchPlan && dispatchPlan.wave_branch && dispatchPlan.wave_branch !== waveBranch) {
+    fail(
+      `dispatch-plan.json records wave branch ${JSON.stringify(dispatchPlan.wave_branch)} but this ` +
+        `session/wave owns ${JSON.stringify(waveBranch)} (invariant I2)`
+    );
+  }
+  const taskBranch = taskBranchName(sessionId, wave, taskId);
+  if (dpEntry && dpEntry.branch && dpEntry.branch !== taskBranch) {
+    fail(
+      `dispatch-plan.json records task branch ${JSON.stringify(dpEntry.branch)} for task ${taskId} ` +
+        `but this session/wave owns ${JSON.stringify(taskBranch)} (invariant I2)`
+    );
+  }
 
   const state = loadWaveState(sessionId, wave);
   state.wave_branch = waveBranch;
@@ -475,7 +721,7 @@ function modeRecord(sessionId, wave, taskId, opts, flags) {
         blocker = blocker || "awaiting dependency merge";
       } else {
         try {
-          merged = mergeTaskBranch(gitRoot, waveBranch, taskBranch);
+          merged = mergeTaskBranch(gitRoot, waveBranch, taskBranch, sessionId, wave);
         } catch (err) {
           saveWaveState(sessionId, wave, state);
           log(sessionId, "wave_merge_conflict", "merging", "blocked", `conflict merging ${taskBranch} into ${waveBranch}`, {
@@ -525,19 +771,23 @@ function modeRecord(sessionId, wave, taskId, opts, flags) {
   process.stdout.write(JSON.stringify(state.results[taskId], null, 2) + "\n");
 }
 
-function mergeTaskBranch(gitRoot, waveBranch, taskBranch) {
-  // Perform the merge in a dedicated worktree checked out to the wave
-  // branch, so this never disturbs whatever the caller's cwd/HEAD is.
-  const mergeWt = path.join(
-    os.tmpdir(),
-    `liberta-wave-merge-${path.basename(gitRoot)}-${waveBranch.replace(/[/\\]/g, "_")}`
-  );
+function mergeTaskBranch(gitRoot, waveBranch, taskBranch, sessionId, wave) {
+  // Perform the merge in a dedicated worktree checked out to the wave branch,
+  // so this never disturbs whatever the caller's cwd/HEAD is. The tree lives
+  // inside this session's own wave directory (invariant I4) -- never in
+  // os.tmpdir(), which every session on the box shares -- and is created and
+  // removed only through the fenced helpers.
+  const mergeWt = path.join(waveDir(sessionId, wave), "merge");
+  assertOwnedWorktreePath(mergeWt, sessionId, wave);
   if (fs.existsSync(mergeWt)) {
-    try {
-      git(gitRoot, ["worktree", "remove", "--force", mergeWt]);
-    } catch {
-      // ignore, will try to reuse/overwrite below
+    if (hasConflict(mergeWt)) {
+      fail(
+        `merge worktree ${mergeWt} still holds unresolved conflicts. Refusing to destroy it. ` +
+          `Reconcile it, commit, then re-run --record with --merged.`
+      );
     }
+    worktreeRemove(gitRoot, mergeWt, sessionId, wave);
+    fs.rmSync(mergeWt, { recursive: true, force: true });
   }
   fs.mkdirSync(path.dirname(mergeWt), { recursive: true });
   git(gitRoot, ["worktree", "add", mergeWt, waveBranch]);
@@ -551,11 +801,7 @@ function mergeTaskBranch(gitRoot, waveBranch, taskBranch) {
     throw err;
   } finally {
     if (!hasConflict(mergeWt)) {
-      try {
-        git(gitRoot, ["worktree", "remove", "--force", mergeWt]);
-      } catch {
-        // best-effort cleanup only
-      }
+      worktreeRemove(gitRoot, mergeWt, sessionId, wave);
     }
   }
 }
@@ -614,7 +860,9 @@ function modeSummary(sessionId, wave) {
   const gitRoot = gitRootFromProject(project);
   if (gitRoot) {
     for (const e of dispatchPlan.tasks) {
-      worktreeRemove(gitRoot, e.worktree_path);
+      // Fenced by invariant I5: anything outside this session's own wave
+      // directory exits non-zero instead of being removed.
+      worktreeRemove(gitRoot, e.worktree_path, sessionId, wave);
     }
   }
 
@@ -639,6 +887,10 @@ function main() {
   if (!sessionId || wave === undefined) {
     fail("usage: <session-id> <wave> [--token-budget <n>] | --record <task_id> --result passed|failed --evidence \"...\" [--merged] [--model <tier>] [--blocker \"...\"] [--tokens <n>] | --summary");
   }
+
+  assertSessionId(sessionId);
+  assertWave(wave);
+  if (opts.record !== undefined) assertTaskId(opts.record);
 
   if (flags.has("summary")) {
     modeSummary(sessionId, wave);

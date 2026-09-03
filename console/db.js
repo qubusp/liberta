@@ -13,40 +13,131 @@ const fs = require("fs");
 const path = require("path");
 const Knex = require("knex");
 
+const { runsRoot } = require("../scripts/_store.cjs");
+
 const DB_CLIENT = (process.env.DB_CLIENT || "sqlite3").trim();
 
-let knex;
+// The port the *original* fixed-path default was written for. Only this
+// exact combination (no LIBERTA_RUNS_DIR override, port === DEFAULT_PORT)
+// keeps the byte-identical legacy path below, so existing installs that
+// never set PORT are untouched by this file's per-instance naming.
+const DEFAULT_PORT = 4177;
 
-if (DB_CLIENT === "pg" || DB_CLIENT === "postgres" || DB_CLIENT === "postgresql") {
-  const DATABASE_URL = process.env.DATABASE_URL;
-  if (!DATABASE_URL || DATABASE_URL.length === 0) {
+// ---------------------------------------------------------------------
+// Where the sqlite mirror file lives. This MUST be scoped to the active
+// run store *and* to the port this instance actually bound: two console
+// processes are two independent mirrors, never one shared file, unless
+// the operator explicitly points them at the same LIBERTA_CONSOLE_DB.
+// console/sync.js's reapRuns() deletes any `runs`/`tasks`/`events` rows
+// whose subject is absent from the run store currently being synced, so
+// two instances sharing one sqlite file -- even when they only share
+// LIBERTA_RUNS_DIR and differ by port -- would each reap the other's
+// rows out from under it every sync tick (T14 attempt 2's regression).
+//
+// Resolution order:
+//   1. LIBERTA_CONSOLE_DB, if set to a non-empty path, always wins (an
+//      explicit override some callers, e.g. T14's tests, rely on) --
+//      two instances CAN share a database this way, deliberately, since
+//      the operator asked for it by name.
+//   2. If LIBERTA_RUNS_DIR is set (a throwaway/test store), the database
+//      lives inside a console-data/ subdirectory of that same store root,
+//      named after the bound port, so it is exactly as throwaway as the
+//      store it mirrors, can never see the operator's rows, AND never
+//      collides with a sibling instance that happens to share the same
+//      LIBERTA_RUNS_DIR on a different port.
+//   3. Otherwise (no LIBERTA_RUNS_DIR): the canonical default port keeps
+//      the original fixed path byte-identical for existing installs; any
+//      other port (e.g. a manually chosen PORT, or PORT_AUTO landing
+//      somewhere else) gets its own port-suffixed file next to it.
+// ---------------------------------------------------------------------
+function resolveDbFile(port) {
+  const dbOverride = process.env.LIBERTA_CONSOLE_DB;
+  if (typeof dbOverride === "string" && dbOverride.length > 0) {
+    return path.resolve(dbOverride);
+  }
+  const runsDirOverride = process.env.LIBERTA_RUNS_DIR;
+  if (typeof runsDirOverride === "string" && runsDirOverride.length > 0) {
+    return path.join(runsRoot(), "console-data", `liberta-${port}.sqlite`);
+  }
+  if (port === DEFAULT_PORT) {
+    return path.join(__dirname, "data", "liberta.sqlite");
+  }
+  return path.join(__dirname, "data", `liberta-${port}.sqlite`);
+}
+
+// ---------------------------------------------------------------------
+// `knex` below is a stable Proxy standing in for the real connection,
+// which is not created until `initDb(port)` runs. server.js only learns
+// its actual bound port after `app.listen` succeeds (LIBERTA_CONSOLE_
+// PORT_AUTO may move it up from the requested port), and the sqlite path
+// must be a function of THAT port (see resolveDbFile above), so the real
+// connection has to be created after the bind, not at require time. This
+// module, server.js and sync.js all destructure `knex` off this file at
+// require time, long before initDb() runs, so the exported value has to
+// be a single object whose identity never changes -- a Proxy that
+// forwards every call and property access to whatever `_client` is set
+// to once initDb() runs -- rather than a plain variable that would only
+// update the binding held by this file, not the copies already destructured
+// elsewhere.
+// ---------------------------------------------------------------------
+let _client = null;
+let dbFile = null;
+
+const knex = new Proxy(function knexNotReady() {}, {
+  apply(_target, _thisArg, args) {
+    if (!_client) {
+      throw new Error("db: knex was used before initDb() completed");
+    }
+    return _client(...args);
+  },
+  get(_target, prop) {
+    if (!_client) {
+      throw new Error("db: knex was used before initDb() completed");
+    }
+    return _client[prop];
+  },
+});
+
+// ---------------------------------------------------------------------
+// Creates the real connection for the given bound port. Must be called
+// exactly once, after server.js's app.listen has succeeded, so the port
+// baked into the sqlite filename (branches 2 and 3 of resolveDbFile
+// above) is the port this process actually ended up on, not the one it
+// merely requested.
+// ---------------------------------------------------------------------
+function initDb(port) {
+  if (DB_CLIENT === "pg" || DB_CLIENT === "postgres" || DB_CLIENT === "postgresql") {
+    const DATABASE_URL = process.env.DATABASE_URL;
+    if (!DATABASE_URL || DATABASE_URL.length === 0) {
+      process.stderr.write(
+        "FATAL: DB_CLIENT=pg but DATABASE_URL is not set. Refusing to start " +
+          "without a Postgres connection string. Set DATABASE_URL (a standard " +
+          "postgres:// connection string) and try again.\n"
+      );
+      process.exit(1);
+    }
+    _client = Knex({
+      client: "pg",
+      connection: DATABASE_URL,
+    });
+  } else if (DB_CLIENT === "sqlite3" || DB_CLIENT === "sqlite") {
+    dbFile = resolveDbFile(port);
+    const dataDir = path.dirname(dbFile);
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
+    }
+    _client = Knex({
+      client: "sqlite3",
+      connection: { filename: dbFile },
+      useNullAsDefault: true,
+    });
+  } else {
     process.stderr.write(
-      "FATAL: DB_CLIENT=pg but DATABASE_URL is not set. Refusing to start " +
-        "without a Postgres connection string. Set DATABASE_URL (a standard " +
-        "postgres:// connection string) and try again.\n"
+      `FATAL: unrecognized DB_CLIENT "${DB_CLIENT}". Expected "sqlite3" or "pg".\n`
     );
     process.exit(1);
   }
-  knex = Knex({
-    client: "pg",
-    connection: DATABASE_URL,
-  });
-} else if (DB_CLIENT === "sqlite3" || DB_CLIENT === "sqlite") {
-  const dataDir = path.join(__dirname, "data");
-  if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir, { recursive: true });
-  }
-  const dbFile = path.join(dataDir, "liberta.sqlite");
-  knex = Knex({
-    client: "sqlite3",
-    connection: { filename: dbFile },
-    useNullAsDefault: true,
-  });
-} else {
-  process.stderr.write(
-    `FATAL: unrecognized DB_CLIENT "${DB_CLIENT}". Expected "sqlite3" or "pg".\n`
-  );
-  process.exit(1);
+  return { dbFile };
 }
 
 // ---------------------------------------------------------------------
@@ -229,4 +320,4 @@ async function seedSkillsFromDisk() {
   return { seeded: true, count: rows.length };
 }
 
-module.exports = { knex, ensureSchema, seedSkillsFromDisk, DB_CLIENT };
+module.exports = { knex, ensureSchema, seedSkillsFromDisk, DB_CLIENT, initDb };

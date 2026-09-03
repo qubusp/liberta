@@ -57,6 +57,9 @@ docs_nav:
   - title: Stopping and budget
     url: /docs/stopping/
     blurb: The budget model and every terminal condition.
+  - title: Concurrency and parallel sessions
+    url: /docs/concurrency/
+    blurb: Where two sessions on one machine collide, and the fix for each.
 
 exclude:
   - Gemfile

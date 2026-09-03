@@ -7,7 +7,7 @@ double-checking each one independently before it counts as done, and
 stopping (with a notification) on a clear terminal condition instead of
 silently running forever or claiming victory early.
 
-MIT licensed — use it, fork it, sell it, whatever. See [LICENSE](LICENSE).
+MIT licensed - use it, fork it, sell it, whatever. See [LICENSE](LICENSE).
 
 ## Why
 
@@ -19,11 +19,11 @@ that anything passed. Liberta's structure exists specifically to close off
 each of those:
 
 - **One task, one fresh subagent.** The controller (`skills/liberta`) never
-  implements anything itself — it reads a task off a plan, hands it to the
+  implements anything itself - it reads a task off a plan, hands it to the
   right specialist, and reads back a verdict. Context never accumulates
   past a thin bookkeeping layer.
 - **Independent verification.** A task is not "done" until a second,
-  separate agent — one that did not write the change — reproduces the
+  separate agent - one that did not write the change - reproduces the
   evidence that it works.
 - **Durable state on disk.** Plan, progress, budget, and an append-only
   event log live in a session store outside the target repo, so a run
@@ -37,7 +37,7 @@ each of those:
 ## Layout
 
 ```
-skills/liberta/SKILL.md   the controller — a Claude Code skill, invoked as /liberta "<goal>"
+skills/liberta/SKILL.md   the controller - a Claude Code skill, invoked as /liberta "<goal>"
 agents/*.md              the specialist roster (planner, builder, auditor, qa, ...)
 scripts/*.mjs            session-store helpers: event log, message inbox
 scripts/wave-exec.js     runs one wave of a plan's tasks concurrently, in isolated worktrees
@@ -56,9 +56,13 @@ prepares the run-store directory, and sets up the console's dependencies.
 
 ```
 ./install.sh --no-console   # harness only, skip the console's npm install
-./install.sh --start        # also start the console immediately, with a
-                             # freshly generated one-off login password
+./install.sh --start        # also start the console immediately, logged in
+                             # with the default password libert@123!
 ```
+
+The default password is insecure and meant only for local, single-operator
+use. For anything durable or reachable over the network, set
+`LIBERTA_CONSOLE_PASSWORD` (see below) before starting the console.
 
 Then from any Claude Code session: `/liberta "<goal>" --project <path>`.
 
@@ -66,7 +70,7 @@ Then from any Claude Code session: `/liberta "<goal>" --project <path>`.
 
 `console/` is a small Node/Express app that reads the session store
 (`~/.claude/liberta-runs/`) and shows, live, which sessions exist, which one
-is active, its current task board, and a tail of its event stream — the
+is active, its current task board, and a tail of its event stream - the
 "which session is working" view. It sits behind a login (see
 `console/README.md`) since the session store can contain repo paths, task
 descriptions, and other detail you may not want exposed to anyone who finds
@@ -75,14 +79,23 @@ the URL.
 ```
 cd console
 npm install
+npm start
+# → http://localhost:4177, logged in with the default password libert@123!
+```
+
+The default password is insecure, intended only for local, single-operator
+use. Set `LIBERTA_CONSOLE_PASSWORD` to override it with your own value
+whenever the console will run for any length of time or be reachable from
+the network; when set and non-empty, it always wins over the default:
+
+```
 LIBERTA_CONSOLE_PASSWORD='pick something' npm start
-# → http://localhost:4177
 ```
 
 ## Checking status
 
 `/liberta status` (also `--status`, or `/liberta` with no goal text) prints
-a progress table for the active run and stops — nothing else. It runs
+a progress table for the active run and stops - nothing else. It runs
 `scripts/_status.mjs` directly: no subagent is dispatched, no plan is
 regenerated, no model is called, and nothing on disk is touched. It just
 reads `~/.claude/liberta-runs/` and prints, so it feels instant even mid-run.
@@ -109,6 +122,44 @@ per-wave: w1:2/2 w2:4/4 w3:8/9 w4:0/6 w5:0/2 w6:0/3 w7:0/1 w8:0/1 w9:0/1
 
 inbox: 0 pending
 ```
+
+## Concurrency
+
+Liberta sessions are not exclusive: several sessions can be running at the
+same time on the same machine, and even against the same target repository.
+Most of what each one keeps on disk is already safe under that; a few shared
+pieces need explicit handling.
+
+- **The run registry (`index.json`) takes a lock.** Every read-modify-write
+  of `~/.claude/liberta-runs/index.json` goes through an advisory lock file
+  named `index.json.lock`, next to it: a writer takes the lock, re-reads the
+  index fresh inside it, applies its change, and writes back, so two sessions
+  updating status at the same moment cannot silently drop each other's entry.
+  A lock is only ever taken over as stale once it is older than 30 seconds
+  AND the pid that holds it is no longer alive; a live holder is never
+  pre-empted. Each session's own `state.json` is guarded the same way.
+- **`active_session_id` is one slot, not a roster.** It names the run the CLI
+  defaults to when you do not pass a session id; it is not a claim that only
+  one session exists. With several sessions live, it points at whichever one
+  most recently touched it, and the others are still running and still
+  visible individually or with `--all`. Do not treat it as "the" active
+  session when more than one may be running.
+- **Per-session files are session scoped and safe.** Each session's own
+  `state.json`, `events.jsonl` and inbox files live under that session's own
+  directory in the run store, so two different sessions never write the same
+  file. `events.jsonl` is append-only and safe under concurrent writers by
+  construction.
+- **Branches and worktrees are session scoped, and no session touches
+  another's.** Branch and worktree names always include the session id, so
+  two sessions can never collide on a name, and worktree removal is fenced to
+  a session's own worktree directory. `git worktree prune` is never run
+  anywhere in this codebase, on purpose: it is a repo-wide operation that
+  would silently deregister another live session's worktree, so any cleanup
+  targets only the session's own paths instead.
+
+The full audit this is based on - every shared file, the exact interleaving
+that can lose an update, and the design decision taken for it - lives at
+`site/docs/concurrency.md`.
 
 ## The name
 

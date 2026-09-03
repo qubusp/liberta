@@ -23,14 +23,87 @@ Override the port with `PORT`:
 PORT=8080 LIBERTA_CONSOLE_PASSWORD='...' npm start
 ```
 
+A second console started on a `PORT` that's already taken refuses to start
+with a one-line `FATAL:` message naming the port -- it never crashes with a
+raw `EADDRINUSE` stack trace. (This describes running `server.js` directly,
+i.e. `npm start`; the `install.sh --start` wrapper does not refuse -- it
+takes over a port held by an existing liberta console instead, see
+`site/docs/install.md`.) If you'd rather it just find a free port on its
+own (useful for running several consoles side by side, e.g. one per test
+run), set `LIBERTA_CONSOLE_PORT_AUTO=1`: it scans upward from `PORT` (up to
+20 ports) and logs which one it actually bound.
+
+```
+PORT=8080 LIBERTA_CONSOLE_PORT_AUTO=1 LIBERTA_CONSOLE_PASSWORD='...' npm start
+```
+
 Optionally set `LIBERTA_CONSOLE_SECRET` to a stable random string (used to
 sign session cookies). If it's left unset, the server generates a random
 secret at boot and warns about it -- every restart will then invalidate
 all existing login sessions, since the signing key changed.
 
-`LIBERTA_CONSOLE_PASSWORD` is required. The server refuses to start at all
-(fails loudly on boot, non-zero exit) if it's unset or empty -- there is
-no default password and no way to run this without one.
+`LIBERTA_CONSOLE_PASSWORD` is an optional override, not a requirement. If
+it's unset or empty, the server falls back to a built-in default password,
+`libert@123!`, instead of refusing to start:
+
+```
+cd console
+npm install
+npm start
+# → http://localhost:4177
+```
+
+**That default is insecure.** It's public (it's printed right here in this
+README), it's identical on every install, and the console binds `0.0.0.0`
+by default -- so anyone else on the same network can reach the login page
+and try it. The default exists only so a quick, local, single-operator
+install works out of the box with zero configuration. The server prints a
+warning to stderr at boot whenever the default is in effect. Set
+`LIBERTA_CONSOLE_PASSWORD` to a real secret for anything durable (you want
+sessions to survive a restart with a stable secret) or reachable over a
+network by anyone besides you.
+
+## Running two consoles side by side
+
+Each console instance is scoped to one `PORT` and, by default, one sqlite
+mirror file, so two instances can run at once without stepping on each
+other -- see "Database" below for exactly how the sqlite path is chosen, and
+[Concurrency and parallel sessions](../site/docs/concurrency.md) for the
+full audit of every place two Liberta processes can otherwise collide on
+one machine.
+
+Three environment variables control this:
+
+- `PORT` (with `LIBERTA_CONSOLE_PORT_AUTO=1` to auto-advance past a taken
+  port, see above) -- which port this instance binds.
+- `LIBERTA_CONSOLE_DB=/some/path.sqlite` -- an explicit override that makes
+  this instance use exactly that sqlite file. Two instances must never be
+  pointed at the same file unless that's a deliberate, explicit choice: the
+  background sync loop reaps rows for anything absent from the run store it
+  is currently syncing, so two instances quietly sharing one file would each
+  erase the other's rows on every sync tick.
+- `LIBERTA_RUNS_DIR=/some/throwaway/dir` -- points this instance at a
+  *different run store* entirely, instead of the real operator store at
+  `~/.claude/liberta-runs/`. **This exists for tests and other throwaway,
+  disposable invocations, not for production use.** Pointing a production
+  console at the wrong store means it shows the wrong runs -- either an old
+  or unrelated set of sessions, or nothing at all, depending on what's in
+  that directory. Never set `LIBERTA_RUNS_DIR` for a console an operator
+  actually relies on.
+
+A worked example, two independent consoles on one machine, each with its
+own port and its own throwaway run store and sqlite mirror:
+
+```
+PORT=4177 LIBERTA_RUNS_DIR=/tmp/liberta-run-a LIBERTA_CONSOLE_PASSWORD='a' npm start &
+PORT=4178 LIBERTA_RUNS_DIR=/tmp/liberta-run-b LIBERTA_CONSOLE_PASSWORD='b' npm start &
+```
+
+The first instance's sqlite mirror lands at
+`/tmp/liberta-run-a/console-data/liberta-4177.sqlite`, the second's at
+`/tmp/liberta-run-b/console-data/liberta-4178.sqlite` -- two different run
+stores, two different ports, two different database files, so neither
+instance ever reads, reaps or overwrites the other's data.
 
 ## Auth model
 
@@ -94,8 +167,8 @@ GitHub" button below the password form.
 `LIBERTA_ALLOWED_GITHUB_USERS` is a comma-separated allowlist of GitHub
 usernames (case-insensitive). **It's required** the moment
 `LIBERTA_OAUTH_GITHUB_CLIENT_ID`/`_SECRET` are set -- if it's missing or
-empty, the server fails loudly at boot and refuses to start, the same
-fail-closed pattern as the missing-password check. This exists because
+empty, the server fails loudly at boot and refuses to start. This is a
+fail-closed check: this exists because
 GitHub OAuth alone only proves "this is a real GitHub account," not "this
 account should have access to this console" -- without an allowlist,
 *any* GitHub user could complete the OAuth flow and get in.
@@ -133,16 +206,30 @@ back to reading the files directly for that one request.
 
 Two supported backends, picked via `DB_CLIENT`:
 
-- **`sqlite3`** (default) -- a local file at `console/data/liberta.sqlite`
-  (the `data/` directory is created automatically on first boot if
-  missing, and is gitignored -- the DB file itself is never committed).
-  Nothing else to configure.
+- **`sqlite3`** (default) -- a local file, created automatically on first
+  boot (its directory is gitignored -- the DB file itself is never
+  committed). Because this DB is a mirror scoped to one run store, two
+  console instances must never share a file unless an operator explicitly
+  says so: the filename is resolved *after* the port is bound (so
+  `LIBERTA_CONSOLE_PORT_AUTO` picking a different port also gets its own
+  file), in this order:
+  1. `LIBERTA_CONSOLE_DB=/some/path.sqlite`, if set, always wins -- an
+     explicit override, and the one way two instances CAN deliberately
+     share a database.
+  2. If `LIBERTA_RUNS_DIR` is set (pointing this console at a non-default
+     run store, e.g. in tests), the file lives inside a `console-data/`
+     subdirectory of that store, named `liberta-<port>.sqlite` --
+     i.e. `<LIBERTA_RUNS_DIR>/console-data/liberta-<port>.sqlite`, not
+     directly at the store's root.
+  3. Otherwise: `console/data/liberta.sqlite` if bound to the canonical
+     default port 4177 (byte-identical to existing installs), or
+     `console/data/liberta-<port>.sqlite` for any other port.
 - **`pg`** -- a real Postgres instance, for production/shared use.
   Requires `DATABASE_URL` (a standard `postgres://user:pass@host:port/db`
   connection string) to also be set. If `DB_CLIENT=pg` is given without
-  `DATABASE_URL`, the server fails loudly on boot and exits (same
-  fail-closed pattern as the missing-password check above) rather than
-  silently falling back to sqlite or starting half-configured.
+  `DATABASE_URL`, the server fails loudly on boot and exits (a
+  fail-closed check) rather than silently falling back to sqlite or
+  starting half-configured.
 
 ```
 DB_CLIENT=pg DATABASE_URL='postgres://user:pass@host:5432/liberta' LIBERTA_CONSOLE_PASSWORD='...' npm start

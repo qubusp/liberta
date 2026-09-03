@@ -23,18 +23,24 @@
 // per-session file that does not depend on the global registry, so it is
 // still updated. The index refusal is reported LAST, after everything that
 // could be safely persisted has been.
+//
+// CONCURRENCY: index.json is a read-modify-write of a file shared by EVERY
+// session, so an atomic write alone is not enough -- two sessions logging a
+// status at the same instant would both read the same old index and the
+// loser's entry would vanish. Both index.json and state.json are therefore
+// updated through updateJsonAtomic() from ./_locked-json.mjs, which takes an
+// advisory lock (<file>.lock) and re-reads the file FRESH inside that lock.
+// See the locking protocol comment in scripts/_locked-json.cjs. No lock is
+// held across a child process spawn; this script spawns nothing.
 
 import fs from "fs";
 import path from "path";
-import os from "os";
+import { runsRoot } from "./_store.mjs";
+import { updateJsonAtomic, SKIP_WRITE } from "./_locked-json.mjs";
 
 function fail(msg) {
   process.stderr.write(`_log-event: ${msg}\n`);
   process.exit(1);
-}
-
-function runsRoot() {
-  return path.join(os.homedir(), ".claude", "liberta-runs");
 }
 
 function parseArgs(argv) {
@@ -130,20 +136,6 @@ function corruptIndexMessage(indexPath, reason) {
   );
 }
 
-function writeJsonAtomic(filePath, obj) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + "\n");
-  try {
-    fs.renameSync(tmp, filePath);
-  } catch (err) {
-    try {
-      fs.rmSync(tmp, { force: true });
-    } catch {}
-    throw err;
-  }
-}
-
 function main() {
   const argv = process.argv.slice(2);
   const { positional, opts } = parseArgs(argv);
@@ -182,46 +174,64 @@ function main() {
   }
 
   if (opts.status !== undefined) {
-    // Update index.json's entry for this session.
+    // Update index.json's entry for this session, under the index lock. The
+    // read happens INSIDE the lock (readIndexForUpdate is handed to
+    // updateJsonAtomic as its reader), so a concurrent session that lands
+    // between our read and our write cannot be dropped.
     const indexPath = path.join(runsRoot(), "index.json");
-    const read = readIndexForUpdate(indexPath);
+    let indexRefusalReason = null;
 
-    if (read.ok) {
-      const index = read.index;
-      if (!Array.isArray(index.sessions)) index.sessions = [];
-      let entry = index.sessions.find((s) => s && s.id === sessionId);
-      if (!entry) {
-        // parent_session_id is part of the index entry shape (see
-        // skills/liberta/SKILL.md). A fallback entry for an unknown session
-        // has no lineage information available, so it starts as null (a
-        // root); whatever creates the session properly is responsible for
-        // setting the real value.
-        entry = {
-          id: sessionId,
-          project_path: null,
-          status: opts.status,
-          parent_session_id: null,
-        };
-        index.sessions.push(entry);
-      } else {
-        // Only status is ours to update here. Never clobber an existing
-        // parent_session_id (or any other field) -- lineage is written at
-        // session creation / by the backfill tool, not by event logging.
-        entry.status = opts.status;
-      }
-      try {
-        writeJsonAtomic(indexPath, index);
-      } catch (err) {
-        fail(`could not write index.json: ${err.message}`);
-      }
+    try {
+      updateJsonAtomic(
+        indexPath,
+        (read) => {
+          if (!read.ok) {
+            // Corrupt / untrustworthy index: refuse to write, leave the file
+            // exactly as found, and report it after everything else has been
+            // persisted (below). SKIP_WRITE releases the lock without
+            // touching the file.
+            indexRefusalReason = read.reason;
+            return SKIP_WRITE;
+          }
+          const index = read.index;
+          if (!Array.isArray(index.sessions)) index.sessions = [];
+          let entry = index.sessions.find((s) => s && s.id === sessionId);
+          if (!entry) {
+            // parent_session_id is part of the index entry shape (see
+            // skills/liberta/SKILL.md). A fallback entry for an unknown
+            // session has no lineage information available, so it starts as
+            // null (a root); whatever creates the session properly is
+            // responsible for setting the real value.
+            entry = {
+              id: sessionId,
+              project_path: null,
+              status: opts.status,
+              parent_session_id: null,
+            };
+            index.sessions.push(entry);
+          } else {
+            // Only status is ours to update here. Never clobber an existing
+            // parent_session_id (or any other field) -- lineage is written at
+            // session creation / by the backfill tool, not by event logging.
+            entry.status = opts.status;
+          }
+          return index;
+        },
+        { read: (p) => readIndexForUpdate(p) }
+      );
+    } catch (err) {
+      // Includes the lock timeout, which names the lock file and the pid
+      // holding it. Nothing was written to index.json in that case.
+      fail(`could not write index.json: ${err.message}`);
     }
 
     // Update state.json's status field. state.json is a per-session file
     // that does not depend on the global registry, so it is updated even
     // when the index was refused -- a registry-wide problem should not also
-    // stop this session tracking its own status.
+    // stop this session tracking its own status. It gets its own lock
+    // (state.json.lock) because the session's own transitions can overlap.
     const statePath = path.join(sessionDir, "state.json");
-    const state = readJson(statePath, {
+    const stateFallback = () => ({
       iteration: 0,
       tokens_spent: 0,
       wall_deadline: null,
@@ -232,16 +242,24 @@ function main() {
       // known here reads as null (a root), and is never invented.
       parent_session_id: null,
     });
-    state.status = opts.status;
     try {
-      writeJsonAtomic(statePath, state);
+      updateJsonAtomic(
+        statePath,
+        (state) => {
+          state.status = opts.status;
+          return state;
+        },
+        { read: (p) => readJson(p, stateFallback()) }
+      );
     } catch (err) {
       fail(`could not write state.json: ${err.message}`);
     }
 
     // Reported last: everything safely persistable has now been persisted,
     // and index.json is byte-for-byte as we found it.
-    if (!read.ok) fail(corruptIndexMessage(indexPath, read.reason));
+    if (indexRefusalReason !== null) {
+      fail(corruptIndexMessage(indexPath, indexRefusalReason));
+    }
   }
 
   process.exit(0);
