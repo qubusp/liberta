@@ -41,6 +41,25 @@ around 29 registered git worktrees pointing into it.
   gets a throwaway database.
 - `pgrep -f 'console/server.js'` false-positives on any shell command whose own
   command line contains that string. Match on the process being `node` as well.
+- The pid-cleanup idiom used throughout this chunk's verify scripts, collecting
+  spawned console pids into a variable with a leading space (`NEW="$NEW $p"`) and
+  then doing `for p in $NEW; do kill "$p" 2>/dev/null || true; done`, is not
+  zsh-safe. bash word-splits an unquoted `$NEW` on IFS, so each `p` comes out as a
+  clean pid; zsh does not word-split an unquoted parameter expansion by default, so
+  the whole value including the leading space (e.g. `" 93828"`) is passed to `kill
+  "$p"` as one token, which fails with `illegal pid:  93828` and leaves the process
+  running, reparented to init. zsh is the default interactive shell on this machine
+  and the shell backing an agent's Bash tool, so running one of these verify
+  snippets literally in an agent's own shell silently orphans a `console/server.js`
+  process: the `2>/dev/null || true` swallows the kill failure, so nothing reports
+  an error even though the process leaked. `install.sh` itself is unaffected (it
+  has a `#!/usr/bin/env bash` shebang), so no real end user hits this; it is purely
+  an agent-verify-script hazard on this shared machine. Fix by either wrapping the
+  loop in an explicit `bash -c '...'` so bash's word-splitting rules apply, or by
+  rewriting the idiom to avoid relying on unquoted-parameter word splitting
+  entirely, for example collecting pids newline-separated and consuming them with
+  `while IFS= read -r p; do kill "$p" 2>/dev/null || true; done`, which kills the
+  process identically under bash and zsh.
 
 ## Environment variables that matter
 
