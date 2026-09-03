@@ -199,6 +199,21 @@ if [ "$INSTALL_CONSOLE" -eq 1 ] && command -v node >/dev/null 2>&1; then
     # ("liberta-console listening on http://localhost:<port>"), falling back
     # to asking lsof what the spawned pid is listening on. Never health-check
     # port 0.
+    #
+    # The health probe must never use the hostname "localhost" itself:
+    # getaddrinfo("localhost") can resolve to ::1 before 127.0.0.1 (or vice
+    # versa) depending on the machine's resolver config, which is independent
+    # of which address family the console actually bound. If some unrelated
+    # process happens to be listening on the SAME numeric port but on the
+    # OTHER address family, "localhost" can silently resolve to that other
+    # listener, so curl reaches it instead of our console, gets a non-200
+    # response, and this loop times out believing a genuinely healthy console
+    # never started -- which then gets killed by kill_spawned_console below.
+    # Probe the literal address we told the console to bind to instead:
+    # LIBERTA_CONSOLE_HOST when the operator set one, else 127.0.0.1 (the
+    # console's own default bind address). This does not change CONSOLE_URL,
+    # the address shown to the operator on success.
+    PROBE_HOST="${LIBERTA_CONSOLE_HOST:-127.0.0.1}"
     up=0
     BOUND_PORT=""
     for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
@@ -215,10 +230,10 @@ if [ "$INSTALL_CONSOLE" -eq 1 ] && command -v node >/dev/null 2>&1; then
         fi
       fi
       if [ -n "$BOUND_PORT" ]; then
-        CANDIDATE_URL="http://localhost:${BOUND_PORT}"
+        CANDIDATE_URL="http://${PROBE_HOST}:${BOUND_PORT}"
         if curl -s -o /dev/null -w '%{http_code}' "$CANDIDATE_URL/login" 2>/dev/null | grep -q '^200$'; then
           up=1
-          CONSOLE_URL="$CANDIDATE_URL"
+          CONSOLE_URL="http://localhost:${BOUND_PORT}"
           CONSOLE_PORT="$BOUND_PORT"
           break
         fi
@@ -232,7 +247,14 @@ if [ "$INSTALL_CONSOLE" -eq 1 ] && command -v node >/dev/null 2>&1; then
       if ! kill -0 "$SPAWNED_PID" 2>/dev/null; then
         up=0
       elif command -v lsof >/dev/null 2>&1; then
-        LISTEN_PID="$(lsof -nP -tiTCP:"$CONSOLE_PORT" -sTCP:LISTEN 2>/dev/null | head -n1 || true)"
+        # Scope this by PROBE_HOST too (not just the port number), for the
+        # same reason as the curl probe above: an unrelated listener on the
+        # same port but the other address family must not be mistaken for
+        # the process curl actually just talked to.
+        LISTEN_PID="$(lsof -nP -tiTCP@"${PROBE_HOST}":"$CONSOLE_PORT" -sTCP:LISTEN 2>/dev/null | head -n1 || true)"
+        if [ -z "$LISTEN_PID" ]; then
+          LISTEN_PID="$(lsof -nP -tiTCP:"$CONSOLE_PORT" -sTCP:LISTEN 2>/dev/null | head -n1 || true)"
+        fi
         if [ -n "$LISTEN_PID" ] && [ "$LISTEN_PID" != "$SPAWNED_PID" ]; then
           up=0
         fi
