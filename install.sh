@@ -133,6 +133,73 @@ if [ "$INSTALL_CONSOLE" -eq 1 ] && command -v node >/dev/null 2>&1; then
   if [ "$START_CONSOLE" -eq 1 ]; then
     LOG_FILE="/tmp/liberta-console-${CONSOLE_PORT}-$$.log"
     echo "==> Starting console (requested port ${CONSOLE_PORT})"
+
+    # ---- takeover ----
+    # `--start` unconditionally takes over the requested port: if a liberta
+    # console (and ONLY a liberta console) already owns it, kill that process
+    # by exact pid and start ours in its place, rather than refusing. Any
+    # other occupant (a process that is not `node`, or a node process whose
+    # argv does not end in "console/server.js") is never touched -- report it
+    # and exit non-zero exactly as before this change.
+    #
+    # PORT=0 means "let the OS pick a free port" (server.js explicitly
+    # supports this for test harnesses): there is nothing meaningful to take
+    # over, since the requested "port" is not a real, occupiable port number.
+    if [ "$CONSOLE_PORT" != "0" ] && command -v lsof >/dev/null 2>&1; then
+      # Enumerate every pid holding a LISTEN socket on this port number,
+      # across BOTH address families -- `lsof -iTCP:<port>` (no host in the
+      # spec) is not scoped to 127.0.0.1/0.0.0.0/::, so it will not miss a
+      # wildcard bind the way a host-scoped query would, and it will not
+      # silently ignore an IPv6-only listener either. Each candidate is then
+      # identity-checked individually below before anything is killed; this
+      # enumeration step never itself decides who to kill.
+      TAKEOVER_CANDIDATES="$(lsof -nP -iTCP:"$CONSOLE_PORT" -sTCP:LISTEN -t 2>/dev/null || true)"
+      if [ -n "$TAKEOVER_CANDIDATES" ]; then
+        TAKEOVER_PIDS=""
+        for cand_pid in $TAKEOVER_CANDIDATES; do
+          cand_args="$(ps -o args= -p "$cand_pid" 2>/dev/null || true)"
+          if [ -z "$cand_args" ]; then
+            # Already gone by the time we asked; nothing to identify or kill.
+            continue
+          fi
+          cand_exe="${cand_args%% *}"
+          cand_last="${cand_args##* }"
+          cand_is_console=0
+          if [ "$(basename "$cand_exe")" = "node" ]; then
+            case "$cand_last" in
+              */console/server.js) cand_is_console=1 ;;
+            esac
+          fi
+          if [ "$cand_is_console" -ne 1 ]; then
+            echo "error: port ${CONSOLE_PORT} is already in use by a process that is not a liberta console (pid ${cand_pid}: ${cand_args})" >&2
+            echo "  refusing to kill it. Free the port yourself, or run with a different PORT." >&2
+            exit 1
+          fi
+          TAKEOVER_PIDS="$TAKEOVER_PIDS $cand_pid"
+        done
+        if [ -n "$TAKEOVER_PIDS" ]; then
+          echo "==> Port ${CONSOLE_PORT} is held by an existing liberta console; taking it over"
+          for tpid in $TAKEOVER_PIDS; do
+            echo "  stopping pid ${tpid}"
+            kill "$tpid" 2>/dev/null || true
+          done
+          for tpid in $TAKEOVER_PIDS; do
+            for _ in 1 2 3 4 5 6 7 8 9 10; do
+              kill -0 "$tpid" 2>/dev/null || break
+              sleep 0.3
+            done
+            if kill -0 "$tpid" 2>/dev/null; then
+              kill -9 "$tpid" 2>/dev/null || true
+              for _ in 1 2 3 4 5; do
+                kill -0 "$tpid" 2>/dev/null || break
+                sleep 0.2
+              done
+            fi
+          done
+        fi
+      fi
+    fi
+
     # Invoke node with a path that contains "console/server.js" (rather than
     # cd-ing into console/ and running the bare filename "server.js") so the
     # resulting process argv is discoverable via `pgrep -f console/server.js`.
