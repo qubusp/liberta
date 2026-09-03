@@ -192,6 +192,53 @@ if [ "$INSTALL_CONSOLE" -eq 1 ] && command -v node >/dev/null 2>&1; then
     trap 'reap_console_unless_handed_off; exit 143' TERM
     trap 'reap_console_unless_handed_off; exit 129' HUP
 
+    # The traps above cannot cover every exit path. Two gaps remain, and
+    # neither can be closed by adding more `trap ... SIGNAL` lines:
+    #
+    # 1. When install.sh itself is launched as a backgrounded command of a
+    #    non-interactive shell (`./install.sh --start &`, the exact pattern
+    #    used by CI jobs, supervisors, and this chunk's own verify scripts),
+    #    POSIX/bash force SIGINT (and SIGQUIT) to SIG_IGN for that
+    #    asynchronous list element. A signal that is ignored on entry to a
+    #    shell "cannot be trapped or reset" (bash(1)), so the `trap ... INT`
+    #    above is silently a no-op there: Ctrl-C-style interruption does
+    #    nothing, and install.sh (and the console it spawned) keep running.
+    # 2. SIGKILL can never be trapped, at all -- including by the natural
+    #    next step a supervisor takes when a SIGINT it sent for (1) appears
+    #    to have no effect and it escalates to a forceful kill.
+    #
+    # Both cases end the same way: this process disappears without running
+    # a single line of its own shell code, so no `trap` body can reap the
+    # console it spawned. The only mechanism the kernel itself guarantees
+    # here is file descriptor teardown on process death, so use that: hold
+    # a read-write handle on a FIFO open for as long as this process is
+    # alive (fd 9). A watchdog subprocess, forked now and independent of
+    # this one from that point on, blocks reading that FIFO. However this
+    # process ends -- clean exit, SIGTERM, SIGKILL, anything -- the kernel
+    # closes fd 9 as part of process teardown, the FIFO's last writer goes
+    # away, and the watchdog's read returns. If nothing was written first
+    # (i.e. we never reached the "console running" hand-off below), the
+    # watchdog reaps the console itself; if we did hand off, we write a
+    # marker byte first and the watchdog leaves the console alone.
+    WATCHDOG_FIFO="$(mktemp -u "${TMPDIR:-/tmp}/liberta-console-watchdog-XXXXXX")"
+    if mkfifo "$WATCHDOG_FIFO" 2>/dev/null; then
+      exec 9<>"$WATCHDOG_FIFO"
+      (
+        # Drop this subshell's own inherited copy of the write end first:
+        # otherwise this process (not just the parent) would hold fd 9
+        # open, and the read below would block forever since a writer
+        # would always still be around.
+        exec 9<&- 2>/dev/null || true
+        HANDOFF_MSG=""
+        IFS= read -r HANDOFF_MSG < "$WATCHDOG_FIFO" 2>/dev/null || true
+        rm -f "$WATCHDOG_FIFO" 2>/dev/null || true
+        if [ "$HANDOFF_MSG" != "handed-off" ]; then
+          kill -9 "$SPAWNED_PID" 2>/dev/null || true
+        fi
+      ) &
+      disown
+    fi
+
     # We cannot trust CONSOLE_PORT for the health check: PORT=0 (explicitly
     # supported by server.js for test harnesses) makes the OS assign a real
     # port, so a literal `http://localhost:0` health check can never succeed.
@@ -285,8 +332,10 @@ if [ "$INSTALL_CONSOLE" -eq 1 ] && command -v node >/dev/null 2>&1; then
 
     if [ "$up" -eq 1 ]; then
       # The console answered and we confirmed we own the port, so leaving it
-      # running is the intended outcome: stand the reaper down.
+      # running is the intended outcome: stand the reaper down, and tell the
+      # FIFO watchdog (see above) not to reap it either once we exit.
       CONSOLE_HANDED_OFF=1
+      printf 'handed-off\n' >&9 2>/dev/null || true
       echo "  console running: $CONSOLE_URL"
       echo "  pid:             $SPAWNED_PID"
       if [ -n "${LIBERTA_CONSOLE_PASSWORD:-}" ]; then
