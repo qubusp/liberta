@@ -25,7 +25,10 @@ PORT=8080 LIBERTA_CONSOLE_PASSWORD='...' npm start
 
 A second console started on a `PORT` that's already taken refuses to start
 with a one-line `FATAL:` message naming the port -- it never crashes with a
-raw `EADDRINUSE` stack trace. If you'd rather it just find a free port on its
+raw `EADDRINUSE` stack trace. (This describes running `server.js` directly,
+i.e. `npm start`; the `install.sh --start` wrapper does not refuse -- it
+takes over a port held by an existing liberta console instead, see
+`site/docs/install.md`.) If you'd rather it just find a free port on its
 own (useful for running several consoles side by side, e.g. one per test
 run), set `LIBERTA_CONSOLE_PORT_AUTO=1`: it scans upward from `PORT` (up to
 20 ports) and logs which one it actually bound.
