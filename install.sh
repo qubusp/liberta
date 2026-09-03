@@ -4,7 +4,8 @@
 # Installs the harness (controller skill + agent roster) into ~/.claude, and
 # optionally sets up the console (npm install, run-store dir, a generated
 # console login password). Safe to re-run: existing installed files are
-# backed up with a .bak-<timestamp> suffix before being overwritten.
+# overwritten in place (staged and atomically swapped in), leaving no
+# timestamped backup copy behind.
 set -euo pipefail
 
 # ---- locate ourselves regardless of cwd ----
@@ -28,14 +29,58 @@ echo "  claude dir:  $CLAUDE_DIR"
 echo
 
 # ---- helpers ----
-backup_if_exists() {
-  local target="$1"
-  if [ -e "$target" ]; then
-    local ts
-    ts="$(date +%Y%m%d%H%M%S)"
-    echo "  existing $target found -> backing up to ${target}.bak-${ts}"
-    mv "$target" "${target}.bak-${ts}"
+# install_dir_in_place: replace the directory at $2 with a copy of $1,
+# exactly (no leftover files from a previous version), overwriting in place
+# with no timestamped backup. Uses stage-then-swap so a copy that fails
+# partway (disk full, permissions, interrupted) leaves the previous working
+# install intact rather than nothing at all: the new tree is copied to a
+# sibling staging path first and only moved into place once that copy is
+# known-good, and the old tree is removed only after the swap succeeds.
+install_dir_in_place() {
+  local src="$1"
+  local dst="$2"
+  local dst_parent
+  dst_parent="$(dirname "$dst")"
+  mkdir -p "$dst_parent"
+  local staging="${dst_parent}/.$(basename "$dst").incoming.$$"
+  local old_aside="${dst_parent}/.$(basename "$dst").previous.$$"
+  rm -rf "$staging" "$old_aside"
+
+  # Stage the new copy first. If cp fails partway (disk full, permissions,
+  # interrupted), the EXIT trap removes the incomplete staging dir and the
+  # script aborts (set -e) with the original $dst left completely untouched.
+  trap 'rm -rf "$staging"' EXIT
+  cp -r "$src" "$staging"
+  trap - EXIT
+
+  # Staged copy is known-good. Swap it in: move the old tree aside, move the
+  # staged tree into place, then remove the old one. There is no window in
+  # which $dst is missing or partial -- it always points at either the
+  # complete old tree or the complete new one.
+  if [ -e "$dst" ]; then
+    mv "$dst" "$old_aside"
   fi
+  mv "$staging" "$dst"
+  rm -rf "$old_aside"
+}
+
+# install_file_in_place: replace the regular file at $2 with a copy of $1,
+# overwriting in place with no timestamped backup. Writes the new content to
+# a temp file in the same directory (so the following rename is atomic) and
+# renames it over the target, so a partial write never leaves the target
+# missing or truncated.
+install_file_in_place() {
+  local src="$1"
+  local dst="$2"
+  local dst_dir
+  dst_dir="$(dirname "$dst")"
+  mkdir -p "$dst_dir"
+  local tmp="${dst_dir}/.$(basename "$dst").incoming.$$"
+  rm -f "$tmp"
+  trap 'rm -f "$tmp"' EXIT
+  cp "$src" "$tmp"
+  trap - EXIT
+  mv "$tmp" "$dst"
 }
 
 require_cmd() {
@@ -78,8 +123,7 @@ done
 echo "==> Installing controller skill"
 require_cmd cp
 mkdir -p "$CLAUDE_DIR/skills"
-backup_if_exists "$CLAUDE_DIR/skills/liberta"
-cp -r "$SCRIPT_DIR/skills/liberta" "$CLAUDE_DIR/skills/liberta"
+install_dir_in_place "$SCRIPT_DIR/skills/liberta" "$CLAUDE_DIR/skills/liberta"
 echo "  installed -> $CLAUDE_DIR/skills/liberta"
 
 # ---- 2. install the agent roster ----
@@ -87,8 +131,7 @@ echo "==> Installing agent roster"
 mkdir -p "$CLAUDE_DIR/agents"
 for f in "$SCRIPT_DIR"/agents/*.md; do
   name="$(basename "$f")"
-  backup_if_exists "$CLAUDE_DIR/agents/$name"
-  cp "$f" "$CLAUDE_DIR/agents/$name"
+  install_file_in_place "$f" "$CLAUDE_DIR/agents/$name"
 done
 echo "  installed $(ls "$SCRIPT_DIR"/agents/*.md | wc -l | tr -d ' ') agent(s) -> $CLAUDE_DIR/agents/"
 
