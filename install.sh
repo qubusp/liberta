@@ -127,7 +127,32 @@ echo "  /liberta \"<goal>\" --project <path-to-a-project>"
 echo
 
 CONSOLE_PORT="${PORT:-4177}"
-CONSOLE_URL="http://localhost:${CONSOLE_PORT}"
+if [ -n "${LIBERTA_CONSOLE_HOST:-}" ]; then
+  # The operator explicitly restricted the bind address via
+  # LIBERTA_CONSOLE_HOST. It carries into the "npm start" command these
+  # manual instructions themselves tell the operator to run next, in the
+  # same shell, so the console really will bind only to that address
+  # family. Echo the operator's own chosen host back instead of a
+  # hardcoded "localhost", which is only reachable by coincidence of the
+  # resolver's address-family preference (the same class of bug T36 fixed
+  # for the --start success message). Bracket it if it is an IPv6 literal,
+  # same detection as PROBE_HOST_URL below: a colon present and not
+  # already bracketed.
+  case "$LIBERTA_CONSOLE_HOST" in
+    *:*)
+      case "$LIBERTA_CONSOLE_HOST" in
+        \[*\]) CONSOLE_HOST_URL="$LIBERTA_CONSOLE_HOST" ;;
+        *) CONSOLE_HOST_URL="[${LIBERTA_CONSOLE_HOST}]" ;;
+      esac
+      ;;
+    *)
+      CONSOLE_HOST_URL="$LIBERTA_CONSOLE_HOST"
+      ;;
+  esac
+  CONSOLE_URL="http://${CONSOLE_HOST_URL}:${CONSOLE_PORT}"
+else
+  CONSOLE_URL="http://localhost:${CONSOLE_PORT}"
+fi
 
 if [ "$INSTALL_CONSOLE" -eq 1 ] && command -v node >/dev/null 2>&1; then
   if [ "$START_CONSOLE" -eq 1 ]; then
