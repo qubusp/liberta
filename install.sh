@@ -220,9 +220,21 @@ if [ "$INSTALL_CONSOLE" -eq 1 ] && command -v node >/dev/null 2>&1; then
     # (i.e. we never reached the "console running" hand-off below), the
     # watchdog reaps the console itself; if we did hand off, we write a
     # marker byte first and the watchdog leaves the console alone.
-    WATCHDOG_FIFO="$(mktemp -u "${TMPDIR:-/tmp}/liberta-console-watchdog-XXXXXX")"
-    if mkfifo "$WATCHDOG_FIFO" 2>/dev/null; then
+    #
+    # This whole watchdog is best-effort, not a hard requirement for
+    # console startup: on some platforms `mktemp -u` still probes
+    # creatability via mkstemp() under the hood, so it fails (and, under
+    # `set -e`, would otherwise abort the entire script) when TMPDIR is
+    # unwritable, read-only, or quota-exhausted -- a plausible condition in
+    # exactly the hardened CI/supervisor environments this chunk targets.
+    # Guard it explicitly so that failure just skips the watchdog instead
+    # of taking down the console launch with it.
+    WATCHDOG_FIFO=""
+    WATCHDOG_ACTIVE=0
+    WATCHDOG_FIFO="$(mktemp -u "${TMPDIR:-/tmp}/liberta-console-watchdog-XXXXXX" 2>/dev/null)" || WATCHDOG_FIFO=""
+    if [ -n "$WATCHDOG_FIFO" ] && mkfifo "$WATCHDOG_FIFO" 2>/dev/null; then
       exec 9<>"$WATCHDOG_FIFO"
+      WATCHDOG_ACTIVE=1
       (
         # Drop this subshell's own inherited copy of the write end first:
         # otherwise this process (not just the parent) would hold fd 9
@@ -349,7 +361,9 @@ if [ "$INSTALL_CONSOLE" -eq 1 ] && command -v node >/dev/null 2>&1; then
       # running is the intended outcome: stand the reaper down, and tell the
       # FIFO watchdog (see above) not to reap it either once we exit.
       CONSOLE_HANDED_OFF=1
-      printf 'handed-off\n' >&9 2>/dev/null || true
+      if [ "$WATCHDOG_ACTIVE" -eq 1 ]; then
+        printf 'handed-off\n' >&9 2>/dev/null || true
+      fi
       echo "  console running: $CONSOLE_URL"
       echo "  pid:             $SPAWNED_PID"
       if [ -n "${LIBERTA_CONSOLE_PASSWORD:-}" ]; then
