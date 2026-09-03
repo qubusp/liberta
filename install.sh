@@ -214,6 +214,24 @@ if [ "$INSTALL_CONSOLE" -eq 1 ] && command -v node >/dev/null 2>&1; then
     # console's own default bind address). This does not change CONSOLE_URL,
     # the address shown to the operator on success.
     PROBE_HOST="${LIBERTA_CONSOLE_HOST:-127.0.0.1}"
+    # A bare IPv6 literal (e.g. "::1") is not a valid host component of a
+    # URL on its own -- it must be wrapped in brackets ("[::1]"), otherwise
+    # "http://::1:PORT/login" is ambiguous/malformed and curl returns
+    # http_code 000 on every poll, which would misreport a genuinely healthy
+    # IPv6-bound console as failed to start and then kill it. Detect this by
+    # the presence of a colon (an IPv4 literal or DNS hostname never
+    # contains one) and by the absence of an already-present bracket.
+    case "$PROBE_HOST" in
+      *:*)
+        case "$PROBE_HOST" in
+          \[*\]) PROBE_HOST_URL="$PROBE_HOST" ;;
+          *) PROBE_HOST_URL="[${PROBE_HOST}]" ;;
+        esac
+        ;;
+      *)
+        PROBE_HOST_URL="$PROBE_HOST"
+        ;;
+    esac
     up=0
     BOUND_PORT=""
     for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
@@ -230,7 +248,7 @@ if [ "$INSTALL_CONSOLE" -eq 1 ] && command -v node >/dev/null 2>&1; then
         fi
       fi
       if [ -n "$BOUND_PORT" ]; then
-        CANDIDATE_URL="http://${PROBE_HOST}:${BOUND_PORT}"
+        CANDIDATE_URL="http://${PROBE_HOST_URL}:${BOUND_PORT}"
         if curl -s -o /dev/null -w '%{http_code}' "$CANDIDATE_URL/login" 2>/dev/null | grep -q '^200$'; then
           up=1
           CONSOLE_URL="http://localhost:${BOUND_PORT}"
@@ -251,7 +269,7 @@ if [ "$INSTALL_CONSOLE" -eq 1 ] && command -v node >/dev/null 2>&1; then
         # same reason as the curl probe above: an unrelated listener on the
         # same port but the other address family must not be mistaken for
         # the process curl actually just talked to.
-        LISTEN_PID="$(lsof -nP -tiTCP@"${PROBE_HOST}":"$CONSOLE_PORT" -sTCP:LISTEN 2>/dev/null | head -n1 || true)"
+        LISTEN_PID="$(lsof -nP -tiTCP@"${PROBE_HOST_URL}":"$CONSOLE_PORT" -sTCP:LISTEN 2>/dev/null | head -n1 || true)"
         if [ -z "$LISTEN_PID" ]; then
           LISTEN_PID="$(lsof -nP -tiTCP:"$CONSOLE_PORT" -sTCP:LISTEN 2>/dev/null | head -n1 || true)"
         fi
