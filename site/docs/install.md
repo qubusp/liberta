@@ -30,6 +30,16 @@ The default password is insecure and meant only for local, single-operator
 use. Set `LIBERTA_CONSOLE_PASSWORD` before starting the console for anything
 durable or reachable from the network; see below.
 
+`--start` takes over the requested `PORT` rather than refusing on conflict.
+If a process already bound to that port is a liberta console (its argv ends
+in `console/server.js`), `install.sh` kills that exact pid and starts its own
+console in its place. Any other kind of process holding the port is left
+untouched, and `install.sh` reports the conflict and exits non-zero instead
+of starting a console. This is a change from running `console/server.js`
+directly (`npm start`), which still refuses to start when its port is taken;
+see [The console]({{ '/docs/console/' | relative_url }}) or
+`console/README.md`.
+
 ## Start a run
 
 From any Claude Code session:
