@@ -199,6 +199,40 @@ if [ "$INSTALL_CONSOLE" -eq 1 ] && command -v node >/dev/null 2>&1; then
     # ("liberta-console listening on http://localhost:<port>"), falling back
     # to asking lsof what the spawned pid is listening on. Never health-check
     # port 0.
+    #
+    # The health probe must never use the bare hostname "localhost":
+    # getaddrinfo("localhost") can resolve to ::1 before 127.0.0.1 (or vice
+    # versa) depending on the machine's resolver config, independent of
+    # which address family the console actually bound. If some unrelated
+    # process happens to be listening on the SAME numeric port but the OTHER
+    # address family, "localhost" can silently resolve to that other
+    # listener, so curl reaches it instead of our console, gets a non-200
+    # response, and this loop times out believing a genuinely healthy
+    # console never started -- which then gets killed below. Probe the
+    # literal address we told the console to bind to instead: whatever the
+    # operator set via LIBERTA_CONSOLE_HOST, else 127.0.0.1 (server.js's own
+    # default bind is the wildcard 0.0.0.0, which is always reachable via
+    # 127.0.0.1). This does not change CONSOLE_URL, the address shown to the
+    # operator on success.
+    PROBE_HOST="${LIBERTA_CONSOLE_HOST:-127.0.0.1}"
+    # A bare IPv6 literal (e.g. "::1") is not a valid host component of a
+    # URL on its own -- it must be bracketed ("[::1]"), otherwise
+    # "http://::1:PORT/login" is malformed and curl returns http_code 000 on
+    # every poll, which would misreport a genuinely healthy IPv6-bound
+    # console as failed to start and then kill it. Detect this by the
+    # presence of a colon (an IPv4 literal or DNS hostname never contains
+    # one) and by the absence of an already-present bracket.
+    case "$PROBE_HOST" in
+      *:*)
+        case "$PROBE_HOST" in
+          \[*\]) PROBE_HOST_URL="$PROBE_HOST" ;;
+          *) PROBE_HOST_URL="[${PROBE_HOST}]" ;;
+        esac
+        ;;
+      *)
+        PROBE_HOST_URL="$PROBE_HOST"
+        ;;
+    esac
     up=0
     BOUND_PORT=""
     for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
@@ -215,10 +249,10 @@ if [ "$INSTALL_CONSOLE" -eq 1 ] && command -v node >/dev/null 2>&1; then
         fi
       fi
       if [ -n "$BOUND_PORT" ]; then
-        CANDIDATE_URL="http://localhost:${BOUND_PORT}"
+        CANDIDATE_URL="http://${PROBE_HOST_URL}:${BOUND_PORT}"
         if curl -s -o /dev/null -w '%{http_code}' "$CANDIDATE_URL/login" 2>/dev/null | grep -q '^200$'; then
           up=1
-          CONSOLE_URL="$CANDIDATE_URL"
+          CONSOLE_URL="http://localhost:${BOUND_PORT}"
           CONSOLE_PORT="$BOUND_PORT"
           break
         fi
@@ -227,13 +261,23 @@ if [ "$INSTALL_CONSOLE" -eq 1 ] && command -v node >/dev/null 2>&1; then
     done
 
     # Even if curl succeeded, confirm it was actually our spawned process
-    # that ended up bound to the port (not a pre-existing/other process).
+    # that ended up bound to the port (not a pre-existing/other process that
+    # happens to answer /login with 200). Scope this check by PID, not by
+    # address/port: server.js's default bind is the wildcard 0.0.0.0, which
+    # lsof reports as "*:PORT", not "127.0.0.1:PORT" -- a host-scoped lsof
+    # query would find nothing for that default and, if it then fell back to
+    # an unscoped `lsof -tiTCP:PORT`, could match a *different* process
+    # listening on the same port number on another address family (e.g. an
+    # IPv6-only listener) and wrongly conclude our console never started,
+    # killing a healthy process. Asking whether SPAWNED_PID itself holds a
+    # LISTEN socket on this port is address-family agnostic and can never
+    # match a process we did not spawn, so there is no unscoped fallback.
     if [ "$up" -eq 1 ] && [ -n "$SPAWNED_PID" ]; then
       if ! kill -0 "$SPAWNED_PID" 2>/dev/null; then
         up=0
       elif command -v lsof >/dev/null 2>&1; then
-        LISTEN_PID="$(lsof -nP -tiTCP:"$CONSOLE_PORT" -sTCP:LISTEN 2>/dev/null | head -n1 || true)"
-        if [ -n "$LISTEN_PID" ] && [ "$LISTEN_PID" != "$SPAWNED_PID" ]; then
+        LISTEN_PID="$(lsof -nP -p "$SPAWNED_PID" -a -iTCP:"$CONSOLE_PORT" -sTCP:LISTEN -t 2>/dev/null | head -n1 || true)"
+        if [ -z "$LISTEN_PID" ]; then
           up=0
         fi
       fi
