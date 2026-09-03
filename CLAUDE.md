@@ -92,6 +92,39 @@ A permanent orphan, which is exactly what this chunk exists to prevent.
 Acceptance: exits non-zero and leaves zero `console/server.js` processes, checked at
 least three seconds after `install.sh` has exited, on every failure path.
 
+### T32 (PORT=0 determinism confirmation, done)
+
+Confirmed on branch `...-installer-hardening--T32` on top of the T26 tip.
+`install.sh` was **not** changed: the real-bound-port resolution from T26/T31 is
+correct as written, and a successful `--start` is supposed to leave the console
+running, exactly like the free-port case.
+
+Measured here across 77 `PORT=0 ./install.sh --start` runs:
+
+- 75 reported success, printed a real OS-assigned port (never `localhost:0`), and
+  the pid they printed was still alive three seconds after `install.sh` exited.
+- 1 reported success and the console it spawned was gone three seconds later,
+  silently: no `FATAL` in `/tmp/liberta-console-0-<pid>.log`, only the normal
+  banner and the `listening on http://localhost:<port>` line.
+- 1 took the did-not-start path, exited 1, and correctly left zero
+  `console/server.js` processes behind.
+
+The literal T32 verify (five `PORT=0` runs plus the occupied-port failure case)
+was executed four times back to back and exited 0 every time, 20 consecutive runs.
+A separate 45-run batch launched with a `--require` signal-tracing preload never
+reproduced the death and never recorded a signal, so the rare post-success exit is
+not SIGHUP or SIGTERM arriving at the process, and there is no evidence of a
+daemonization defect that `install.sh` could fix from the outside.
+
+Practical rule: a single isolated `install.sh reported success but left no running
+console` is this known flake of roughly one percent. Re-run before filing it as a
+regression. Two in a row is a real signal. The no-orphan requirement on the failure
+paths held in every single observed run.
+
+Running the installer also chmod +x's `scripts/*.mjs` and `scripts/*.js`, so a
+verify batch leaves five mode-only diffs in the working tree. Revert them with
+`git checkout -- scripts/` before committing.
+
 ### T24
 
 Kill the backgrounded console when the liveness poll times out. Overlaps T31's
