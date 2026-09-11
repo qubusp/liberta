@@ -88,38 +88,45 @@ local single-operator tool, so edge cases beyond basic functionality are not wor
 doing. T39 and T43 are `deferred` under that ruling (unwritable `TMPDIR`, and an
 untrappable SIGKILL landing in a specific window). Do not re-file them.
 
-Still open: T41 (see below), then T42, T50 and T51 which depend on it, plus T49
-(the printed no-start `npm start` instructions omit `LIBERTA_CONSOLE_HOST`).
+Still open: T42 and T51 (both depend on T41, which is now done, so both are
+unblocked), plus T49 (the printed no-start `npm start` instructions omit
+`LIBERTA_CONSOLE_HOST`). T50 also depends on T41 but is the untrappable-SIGKILL
+class the operator descoped, so treat it as deferred in practice.
 
-### T41 (partially landed, crash-safety fix open as PR #11)
+### T41 (done, merged in two parts)
 
 `install.sh` overwrites the installed skill and agent roster in place rather than
 leaving `.bak-<timestamp>` directories behind. Without this, a reinstall registers
 the backup directory as a second competing skill, which was observed live.
 
-The feature is on `main` and works. **The crash-safety fix is not.** PR #10 merged
-`25f4066`, a rebase of an *earlier* revision that QA had already rejected: in
-`install_dir_in_place`, the EXIT trap is cleared with `trap - EXIT` before the
-swap, so if `mv "$staging" "$dst"` fails after `mv "$dst" "$old_aside"` has already
-succeeded, nothing restores the old tree and the operator is left with no skill
-installed at all.
+This landed in two parts, and the history is worth keeping because the intermediate
+state was dangerous. PR #10 merged `25f4066`, a rebase of an *earlier* revision that
+QA had already rejected: in `install_dir_in_place`, the EXIT trap was cleared with
+`trap - EXIT` before the swap, so if `mv "$staging" "$dst"` failed after
+`mv "$dst" "$old_aside"` had already succeeded, nothing restored the old tree and
+the operator was left with no skill installed at all. For several hours `main`
+carried the feature without its crash safety.
 
-The accepted fix is commit `9f10e86` on branch `...-installer-hardening--T41`: it
-adds a `dst_moved_aside` flag and an EXIT trap that moves `$old_aside` back to
-`$dst` when the final `mv` fails. That branch predates PR #9's merge, so it cannot
-be merged wholesale and a cherry-pick onto `main` conflicts. The change was
-therefore reapplied by hand as `ea40355`, with `install_dir_in_place` byte-identical
-to `9f10e86` and nothing else in `install.sh` touched. That is **open as PR #11**
-and not yet merged: until it lands, `main` still carries the rejected revision.
+The accepted fix is commit `9f10e86` on branch `...-installer-hardening--T41`: a
+`dst_moved_aside` flag and an EXIT trap that moves `$old_aside` back to `$dst` when
+the final `mv` fails. That branch predates PR #9's merge, so it could not be merged
+wholesale and a cherry-pick onto `main` conflicted. It was reapplied by hand as
+`ea40355`, `install_dir_in_place` byte-identical to `9f10e86` and nothing else in
+`install.sh` touched, and merged via **PR #11** (merge commit `22596c3`).
+
+The lesson for the next rebase-onto-a-diverged-base: a merge commit existing is not
+evidence that the intended content arrived. Verify the merged result, not the branch
+you built.
 
 The failure path is testable, but only with a failure injection that is itself
 verified to fire. Override `mv` as a real executable earlier on `PATH` (a shell
 function is not picked up by the already-parsed function body) that fails only when
 the source basename matches `.<dst>.incoming.*`, and assert the injection actually
-fired before reading the result. Against `main` the destination ends up missing with
-two orphaned dot-directories; with the fix it is restored, with no artifacts. Both
-exit non-zero. An earlier probe that skipped the fired-check silently exercised the
-happy path and reported a false pass.
+fired before reading the result. Confirmed against merged `main` on 2026-09-11: the
+destination is restored with no leftover dot-directories, exit non-zero. Against the
+pre-fix revision the destination ends up missing with two orphaned dot-directories.
+An earlier probe that skipped the fired-check silently exercised the happy path and
+reported a false pass.
 
 The remaining QA withhold on T41 is a SIGKILL landing exactly between the two `mv`
 calls. That is the untrappable-kill class the operator descoped on 2026-09-03; it is
