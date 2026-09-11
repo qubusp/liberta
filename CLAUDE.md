@@ -73,43 +73,57 @@ around 29 registered git worktrees pointing into it.
 
 ## Remaining work
 
-Everything below lives in the `installer-hardening` chunk and every task edits
-`install.sh` only, so they are chained rather than run in parallel. Branch:
-`harness/liberta-parallel-sessions-2026-09-02-installer-hardening` (tip `41ec919`).
+All of the `installer-hardening` work below edits `install.sh` only. Branch:
+`harness/liberta-parallel-sessions-2026-09-02-installer-hardening` (tip `3808504`),
+fully merged into `main` via PR #9.
 
-Already merged onto that branch:
+**Status as of 2026-09-11.** T21, T22, T24, T25, T26, T27, T31, T32, T40, T44 and
+T48 are all done, merged and independently verified. An earlier revision of this
+section listed T26, T31, T24, T21 and T22 as open or unverified; that was stale by
+several iterations. Check `tasks.json` in the run directory, not this file, for
+live task status.
 
-- **T27** `install.sh --start` now confirms via `lsof` that the pid it spawned is
-  the process actually holding the port, instead of accepting any HTTP 200. Without
-  this, a second session on a taken port was told its console was running when the
-  first session's console had answered and its own process had died.
-- **T25** unique per-run log file (`/tmp/liberta-console-<port>-<pid>.log`), so two
-  installs no longer clobber each other's diagnostics.
+The operator descoped the remaining installer hardening on 2026-09-03: this is a
+local single-operator tool, so edge cases beyond basic functionality are not worth
+doing. T39 and T43 are `deferred` under that ruling (unwritable `TMPDIR`, and an
+untrappable SIGKILL landing in a specific window). Do not re-file them.
 
-Still open, in dependency order:
+Still open: T41 (see below), then T42, T50 and T51 which depend on it, plus T49
+(the printed no-start `npm start` instructions omit `LIBERTA_CONSOLE_HOST`).
 
-### T26 (in progress, unverified)
+### T41 (partially landed, crash-safety fix open as PR #11)
 
-Make the backgrounded console discoverable by path so the documented pid cleanup
-works, and resolve the real bound port instead of the requested one.
+`install.sh` overwrites the installed skill and agent roster in place rather than
+leaving `.bak-<timestamp>` directories behind. Without this, a reinstall registers
+the backup directory as a second competing skill, which was observed live.
 
-There is a commit for this, `2760110`, on branch
-`...-installer-hardening--T26`. It was **never independently verified and never
-passed QA**, because the run was stopped mid-wave. Do not treat it as done because
-the commit exists. Re-run it through the gates.
+The feature is on `main` and works. **The crash-safety fix is not.** PR #10 merged
+`25f4066`, a rebase of an *earlier* revision that QA had already rejected: in
+`install_dir_in_place`, the EXIT trap is cleared with `trap - EXIT` before the
+swap, so if `mv "$staging" "$dst"` fails after `mv "$dst" "$old_aside"` has already
+succeeded, nothing restores the old tree and the operator is left with no skill
+installed at all.
 
-### T31 (the bug that matters most here)
+The accepted fix is commit `9f10e86` on branch `...-installer-hardening--T41`: it
+adds a `dst_moved_aside` flag and an EXIT trap that moves `$old_aside` back to
+`$dst` when the final `mv` fails. That branch predates PR #9's merge, so it cannot
+be merged wholesale and a cherry-pick onto `main` conflicts. The change was
+therefore reapplied by hand as `ea40355`, with `install_dir_in_place` byte-identical
+to `9f10e86` and nothing else in `install.sh` touched. That is **open as PR #11**
+and not yet merged: until it lands, `main` still carries the rejected revision.
 
-`install.sh --start` with `PORT=0`, which `server.js` explicitly supports for test
-harnesses, builds its health-check URL from the literal requested port and gets
-`http://localhost:0`. The console binds a real OS-assigned port and logs it, the
-health check can never succeed, and after the timeout `install.sh` prints its
-did-not-start error and exits 1 **without killing the process it spawned**. The
-console was confirmed alive more than three seconds after exit, reparented to init.
-A permanent orphan, which is exactly what this chunk exists to prevent.
+The failure path is testable, but only with a failure injection that is itself
+verified to fire. Override `mv` as a real executable earlier on `PATH` (a shell
+function is not picked up by the already-parsed function body) that fails only when
+the source basename matches `.<dst>.incoming.*`, and assert the injection actually
+fired before reading the result. Against `main` the destination ends up missing with
+two orphaned dot-directories; with the fix it is restored, with no artifacts. Both
+exit non-zero. An earlier probe that skipped the fired-check silently exercised the
+happy path and reported a false pass.
 
-Acceptance: exits non-zero and leaves zero `console/server.js` processes, checked at
-least three seconds after `install.sh` has exited, on every failure path.
+The remaining QA withhold on T41 is a SIGKILL landing exactly between the two `mv`
+calls. That is the untrappable-kill class the operator descoped on 2026-09-03; it is
+tracked as T50 and is not addressed by PR #11.
 
 ### T32 (PORT=0 determinism confirmation, done)
 
