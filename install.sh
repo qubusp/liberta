@@ -29,39 +29,47 @@ echo "  claude dir:  $CLAUDE_DIR"
 echo
 
 # ---- helpers ----
-# install_dir_in_place: replace the directory at $2 with a copy of $1,
-# exactly (no leftover files from a previous version), overwriting in place
-# with no timestamped backup. Uses stage-then-swap so a copy that fails
-# partway (disk full, permissions, interrupted) leaves the previous working
-# install intact rather than nothing at all: the new tree is copied to a
-# sibling staging path first and only moved into place once that copy is
-# known-good, and the old tree is removed only after the swap succeeds.
+# install_dir_in_place: replace the directory at $2 with an exact copy of
+# $1, overwriting in place with no timestamped backup left behind. Stages
+# the new copy at a sibling path first, then atomically swaps it in: the
+# old tree is moved aside, the staged tree is moved into place, and only
+# then is the old tree removed. If anything fails before the old tree is
+# moved aside, the original install is untouched. If the final move into
+# place fails after the old tree was already moved aside, the old tree is
+# restored before this function (and the script, under set -e) exits, so
+# $dst is never left missing. Because the whole tree is replaced rather
+# than merged with cp -r, files removed upstream do not survive a reinstall.
 install_dir_in_place() {
   local src="$1"
   local dst="$2"
   local dst_parent
   dst_parent="$(dirname "$dst")"
   mkdir -p "$dst_parent"
-  local staging="${dst_parent}/.$(basename "$dst").incoming.$$"
-  local old_aside="${dst_parent}/.$(basename "$dst").previous.$$"
+  local base
+  base="$(basename "$dst")"
+  local staging="${dst_parent}/.${base}.incoming.$$"
+  local old_aside="${dst_parent}/.${base}.previous.$$"
   rm -rf "$staging" "$old_aside"
 
-  # Stage the new copy first. If cp fails partway (disk full, permissions,
-  # interrupted), the EXIT trap removes the incomplete staging dir and the
-  # script aborts (set -e) with the original $dst left completely untouched.
-  trap 'rm -rf "$staging"' EXIT
-  cp -r "$src" "$staging"
-  trap - EXIT
+  local dst_moved_aside=0
+  trap '
+    if [ "$dst_moved_aside" -eq 1 ] && [ ! -e "$dst" ]; then
+      mv "$old_aside" "$dst" 2>/dev/null || true
+    fi
+    rm -rf "$staging" "$old_aside" 2>/dev/null || true
+  ' EXIT
 
-  # Staged copy is known-good. Swap it in: move the old tree aside, move the
-  # staged tree into place, then remove the old one. There is no window in
-  # which $dst is missing or partial -- it always points at either the
-  # complete old tree or the complete new one.
+  cp -r "$src" "$staging"
+
   if [ -e "$dst" ]; then
     mv "$dst" "$old_aside"
+    dst_moved_aside=1
   fi
+
   mv "$staging" "$dst"
-  rm -rf "$old_aside"
+
+  trap - EXIT
+  rm -rf "$old_aside" 2>/dev/null || true
 }
 
 # install_file_in_place: replace the regular file at $2 with a copy of $1,
